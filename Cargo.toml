@@ -1,0 +1,42 @@
+[package]
+name = "confer"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Local multi-agent rooms over MCP"
+repository = "https://github.com/samzong/confer"
+publish = false
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+fs2 = "0.4"
+kitup = "0.1.1"
+rmcp = { version = "3.1.4", default-features = false, features = [
+    "server",
+    "macros",
+    "schemars",
+    "transport-io",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = [
+    "rt",
+    "macros",
+    "io-std",
+    "io-util",
+    "process",
+    "sync",
+    "time",
+] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

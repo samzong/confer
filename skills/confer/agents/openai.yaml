@@ -1,0 +1,4 @@
+interface:
+  display_name: "Confer"
+  short_description: "Coordinate private rooms of coding agents"
+  default_prompt: "Use $confer to ask other coding agents for independent analysis, then synthesize one verified conclusion."
