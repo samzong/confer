@@ -4,7 +4,7 @@
 
 Confer is a local MCP server that lets the current coding agent consult, coordinate, and resume other installed coding agents without copying text between terminal windows. It is a standalone Rust binary and has no dependency on Recall, Orca, or a daemon.
 
-![Confer architecture](docs/confer-architecture.svg)
+![Confer architecture](confer-architecture.svg)
 
 ## Supported participants and hosts
 
@@ -158,7 +158,7 @@ confer skill install [--scope user|project] [--agent <id>]... [--dry-run] [--yes
 
 MCP and Skill installation are deliberately independent. `confer mcp install` never installs the Skill, and `confer skill install` never changes MCP configuration. MCP installation auto-detects Claude Code, Codex, Cursor, Grok, and Antigravity CLI. Skill installation auto-detects only Claude Code, Codex, Cursor, and Grok.
 
-`confer skill install` embeds the [canonical Skill](skills/confer/SKILL.md) and delegates target paths, conflict protection, updates, scope, and dry-run reporting to Kitup. User scope is the default.
+`confer skill install` embeds the [canonical Skill](../skills/confer/SKILL.md) and delegates target paths, conflict protection, updates, scope, and dry-run reporting to Kitup. User scope is the default.
 
 `confer mcp install` follows each host’s supported registration mechanism. Repeated installation updates the Confer-owned registration without deleting unrelated MCP entries. Uninstall removes only the `confer` entry.
 

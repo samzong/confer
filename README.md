@@ -14,8 +14,6 @@ confer mcp install
 confer skill install --yes
 ```
 
-Room operations are MCP-only. See [SPEC.md](SPEC.md) for the contract and CLI options.
-
 ## Development
 
 ```bash
