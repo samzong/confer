@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, watch};
 
 use super::ConferMcp;
 use super::api::{SendMessageArgs, WaitOutputArgs, timestamp};
@@ -94,15 +94,110 @@ impl WorkerProbe {
 }
 
 #[derive(Clone)]
+struct DeliveryTracker {
+    states: Arc<Mutex<HashMap<String, DeliveryState>>>,
+    updates: watch::Sender<()>,
+}
+
+impl DeliveryTracker {
+    fn new() -> Self {
+        let (updates, _) = watch::channel(());
+        Self {
+            states: Arc::new(Mutex::new(HashMap::new())),
+            updates,
+        }
+    }
+
+    fn subscribe(&self) -> watch::Receiver<()> {
+        self.updates.subscribe()
+    }
+
+    #[cfg(test)]
+    fn subscriber_count(&self) -> usize {
+        self.updates.receiver_count()
+    }
+
+    async fn insert(&self, delivery: DeliveryState) {
+        let mut states = self.states.lock().await;
+        states.insert(delivery.delivery_id.clone(), delivery);
+        drop(states);
+        self.updates.send_replace(());
+    }
+
+    async fn update(&self, delivery_id: &str, update: impl FnOnce(&mut DeliveryState)) {
+        let mut states = self.states.lock().await;
+        let Some(delivery) = states.get_mut(delivery_id) else {
+            return;
+        };
+        update(delivery);
+        drop(states);
+        self.updates.send_replace(());
+    }
+
+    async fn set_running(&self, delivery_id: &str) {
+        self.update(delivery_id, |delivery| {
+            delivery.status = DeliveryStatus::Running;
+        })
+        .await;
+    }
+
+    async fn set_failed(&self, delivery_id: &str, error: String) {
+        self.update(delivery_id, |delivery| {
+            delivery.status = DeliveryStatus::Failed;
+            delivery.final_answer = None;
+            delivery.error = Some(error);
+        })
+        .await;
+    }
+
+    async fn finish(
+        &self,
+        delivery_id: &str,
+        mismatch: Option<String>,
+        persistence_error: Option<String>,
+        output_error: Option<String>,
+        answer: Option<String>,
+    ) {
+        self.update(delivery_id, |delivery| {
+            finish_delivery(delivery, mismatch, persistence_error, output_error, answer);
+        })
+        .await;
+    }
+
+    async fn snapshots(&self, room_id: &str, requested: &[String]) -> Result<Vec<DeliveryState>> {
+        let map = self.states.lock().await;
+        if requested.is_empty() {
+            let mut deliveries = map
+                .values()
+                .filter(|delivery| delivery.room_id == room_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            deliveries.sort_by(|left, right| left.delivery_id.cmp(&right.delivery_id));
+            return Ok(deliveries);
+        }
+        let mut deliveries = Vec::new();
+        for id in requested {
+            let delivery = map
+                .get(id)
+                .filter(|delivery| delivery.room_id == room_id)
+                .cloned()
+                .with_context(|| format!("delivery '{id}' is unknown in room '{room_id}'"))?;
+            deliveries.push(delivery);
+        }
+        Ok(deliveries)
+    }
+}
+
+#[derive(Clone)]
 pub(super) struct DeliveryRuntime {
-    deliveries: Arc<Mutex<HashMap<String, DeliveryState>>>,
+    deliveries: DeliveryTracker,
     workers: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<QueuedDelivery>>>>,
 }
 
 impl DeliveryRuntime {
     pub(super) fn new() -> Self {
         Self {
-            deliveries: Arc::new(Mutex::new(HashMap::new())),
+            deliveries: DeliveryTracker::new(),
             workers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -172,9 +267,9 @@ impl ConferMcp {
             return self.failed_delivery(room, seat, error).await;
         }
         let delivery_id = uuid::Uuid::new_v4().to_string();
-        self.runtime.deliveries.lock().await.insert(
-            delivery_id.clone(),
-            DeliveryState {
+        self.runtime
+            .deliveries
+            .insert(DeliveryState {
                 delivery_id: delivery_id.clone(),
                 room_id: room.id.clone(),
                 seat_id: seat.id.clone(),
@@ -183,8 +278,8 @@ impl ConferMcp {
                 status: DeliveryStatus::Queued,
                 final_answer: None,
                 error: None,
-            },
-        );
+            })
+            .await;
         let queued = QueuedDelivery {
             delivery_id: delivery_id.clone(),
             room_id: room.id.clone(),
@@ -240,9 +335,9 @@ impl ConferMcp {
         error: String,
     ) -> SendReceipt {
         let delivery_id = uuid::Uuid::new_v4().to_string();
-        self.runtime.deliveries.lock().await.insert(
-            delivery_id.clone(),
-            DeliveryState {
+        self.runtime
+            .deliveries
+            .insert(DeliveryState {
                 delivery_id: delivery_id.clone(),
                 room_id: room.id.clone(),
                 seat_id: seat.id.clone(),
@@ -251,8 +346,8 @@ impl ConferMcp {
                 status: DeliveryStatus::Failed,
                 final_answer: None,
                 error: Some(error.clone()),
-            },
-        );
+            })
+            .await;
         SendReceipt {
             delivery_id,
             seat_id: seat.id.clone(),
@@ -264,21 +359,20 @@ impl ConferMcp {
     }
 
     async fn mark_delivery_failed(&self, delivery_id: &str, error: String) {
-        if let Some(delivery) = self.runtime.deliveries.lock().await.get_mut(delivery_id) {
-            delivery.status = DeliveryStatus::Failed;
-            delivery.final_answer = None;
-            delivery.error = Some(error);
-        }
+        self.runtime.deliveries.set_failed(delivery_id, error).await;
     }
 
     pub(super) async fn wait_output_inner(&self, args: WaitOutputArgs) -> Result<WaitOutput> {
         let workspace = current_workspace()?;
         self.store.room_for_workspace(&args.room_id, &workspace)?;
         let timeout_ms = args.timeout_ms.unwrap_or(DEFAULT_WAIT_MS).min(MAX_WAIT_MS);
-        let started = tokio::time::Instant::now();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+        let mut updates = self.runtime.deliveries.subscribe();
         loop {
             let deliveries = self
-                .delivery_snapshots(&args.room_id, &args.delivery_ids)
+                .runtime
+                .deliveries
+                .snapshots(&args.room_id, &args.delivery_ids)
                 .await?;
             if args.delivery_ids.is_empty() && deliveries.is_empty() {
                 return Ok(WaitOutput {
@@ -289,7 +383,7 @@ impl ConferMcp {
                 });
             }
             let completed = deliveries_completed(&deliveries);
-            let timed_out = !completed && started.elapsed() >= Duration::from_millis(timeout_ms);
+            let timed_out = !completed && tokio::time::Instant::now() >= deadline;
             if completed || timed_out || timeout_ms == 0 {
                 return Ok(WaitOutput {
                     room_id: args.room_id,
@@ -298,42 +392,18 @@ impl ConferMcp {
                     deliveries,
                 });
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::select! {
+                _ = updates.changed() => {}
+                _ = tokio::time::sleep_until(deadline) => {}
+            }
         }
-    }
-
-    async fn delivery_snapshots(
-        &self,
-        room_id: &str,
-        requested: &[String],
-    ) -> Result<Vec<DeliveryState>> {
-        let map = self.runtime.deliveries.lock().await;
-        if requested.is_empty() {
-            let mut deliveries = map
-                .values()
-                .filter(|delivery| delivery.room_id == room_id)
-                .cloned()
-                .collect::<Vec<_>>();
-            deliveries.sort_by(|left, right| left.delivery_id.cmp(&right.delivery_id));
-            return Ok(deliveries);
-        }
-        let mut deliveries = Vec::new();
-        for id in requested {
-            let delivery = map
-                .get(id)
-                .filter(|delivery| delivery.room_id == room_id)
-                .cloned()
-                .with_context(|| format!("delivery '{id}' is unknown in room '{room_id}'"))?;
-            deliveries.push(delivery);
-        }
-        Ok(deliveries)
     }
 }
 
 async fn run_seat_worker(
     mut receiver: mpsc::UnboundedReceiver<QueuedDelivery>,
     store: StateStore,
-    deliveries: Arc<Mutex<HashMap<String, DeliveryState>>>,
+    deliveries: DeliveryTracker,
 ) {
     while let Some(queued) = receiver.recv().await {
         let session_guard = loop {
@@ -343,7 +413,9 @@ async fn run_seat_worker(
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
                 Err(error) => {
-                    set_delivery_failed(&deliveries, &queued.delivery_id, error.to_string()).await;
+                    deliveries
+                        .set_failed(&queued.delivery_id, error.to_string())
+                        .await;
                     break None;
                 }
             }
@@ -358,12 +430,14 @@ async fn run_seat_worker(
 async fn process_queued_delivery(
     queued: &QueuedDelivery,
     store: &StateStore,
-    deliveries: &Arc<Mutex<HashMap<String, DeliveryState>>>,
+    deliveries: &DeliveryTracker,
 ) {
     let room = match store.room_for_workspace(&queued.room_id, &queued.workspace) {
         Ok(room) => room,
         Err(error) => {
-            set_delivery_failed(deliveries, &queued.delivery_id, error.to_string()).await;
+            deliveries
+                .set_failed(&queued.delivery_id, error.to_string())
+                .await;
             return;
         }
     };
@@ -373,48 +447,46 @@ async fn process_queued_delivery(
         .find(|seat| seat.id == queued.seat_id)
         .cloned()
     else {
-        set_delivery_failed(
-            deliveries,
-            &queued.delivery_id,
-            format!("seat '{}' disappeared before delivery", queued.seat_id),
-        )
-        .await;
+        deliveries
+            .set_failed(
+                &queued.delivery_id,
+                format!("seat '{}' disappeared before delivery", queued.seat_id),
+            )
+            .await;
         return;
     };
     if seat.status == SeatStatus::Retired {
-        set_delivery_failed(
-            deliveries,
-            &queued.delivery_id,
-            format!("seat '{}' is retired", seat.name),
-        )
-        .await;
+        deliveries
+            .set_failed(
+                &queued.delivery_id,
+                format!("seat '{}' is retired", seat.name),
+            )
+            .await;
         return;
     }
     let readiness = adapters::check_readiness(seat.agent);
     if !readiness.locally_ready {
-        set_delivery_failed(
-            deliveries,
-            &queued.delivery_id,
-            readiness
-                .reason
-                .unwrap_or_else(|| "agent is not locally ready".into()),
-        )
-        .await;
+        deliveries
+            .set_failed(
+                &queued.delivery_id,
+                readiness
+                    .reason
+                    .unwrap_or_else(|| "agent is not locally ready".into()),
+            )
+            .await;
         return;
     }
-    if let Some(delivery) = deliveries.lock().await.get_mut(&queued.delivery_id) {
-        delivery.status = DeliveryStatus::Running;
-    }
+    deliveries.set_running(&queued.delivery_id).await;
     let first_message = seat.native_session_id.is_none();
     let executable = match readiness.executable {
         Some(executable) => PathBuf::from(executable),
         None => {
-            set_delivery_failed(
-                deliveries,
-                &queued.delivery_id,
-                "agent readiness returned no executable".into(),
-            )
-            .await;
+            deliveries
+                .set_failed(
+                    &queued.delivery_id,
+                    "agent readiness returned no executable".into(),
+                )
+                .await;
             return;
         }
     };
@@ -422,7 +494,9 @@ async fn process_queued_delivery(
         match adapters::reserve_session(seat.agent, &executable).await {
             Ok(session) => session,
             Err(error) => {
-                set_delivery_failed(deliveries, &queued.delivery_id, error.to_string()).await;
+                deliveries
+                    .set_failed(&queued.delivery_id, error.to_string())
+                    .await;
                 return;
             }
         }
@@ -434,7 +508,9 @@ async fn process_queued_delivery(
         && let Err(error) =
             persist_native_session(store, &queued.room_id, &queued.seat_id, reserved.as_deref())
     {
-        set_delivery_failed(deliveries, &queued.delivery_id, error.to_string()).await;
+        deliveries
+            .set_failed(&queued.delivery_id, error.to_string())
+            .await;
         return;
     }
     let invocation = Invocation {
@@ -458,28 +534,15 @@ async fn process_queued_delivery(
         persist_native_session(store, &queued.room_id, &queued.seat_id, observed_session)
             .err()
             .map(|error| format!("native session could not be persisted: {error}"));
-    let mut map = deliveries.lock().await;
-    if let Some(delivery) = map.get_mut(&queued.delivery_id) {
-        finish_delivery(
-            delivery,
+    deliveries
+        .finish(
+            &queued.delivery_id,
             mismatch,
             persistence_error,
             output.error,
             output.answer,
-        );
-    }
-}
-
-async fn set_delivery_failed(
-    deliveries: &Arc<Mutex<HashMap<String, DeliveryState>>>,
-    delivery_id: &str,
-    error: String,
-) {
-    if let Some(delivery) = deliveries.lock().await.get_mut(delivery_id) {
-        delivery.status = DeliveryStatus::Failed;
-        delivery.final_answer = None;
-        delivery.error = Some(error);
-    }
+        )
+        .await;
 }
 
 fn seat_key(room_id: &str, seat_id: &str) -> String {
@@ -595,10 +658,14 @@ fn finish_delivery(
 #[cfg(test)]
 mod tests {
     use super::{
-        DeliveryState, DeliveryStatus, deliveries_completed, finish_delivery,
+        DeliveryRuntime, DeliveryState, DeliveryStatus, deliveries_completed, finish_delivery,
         native_session_outcome, resolve_recipients,
     };
+    use crate::mcp::ConferMcp;
+    use crate::mcp::api::WaitOutputArgs;
+    use crate::state::{StateStore, current_workspace};
     use crate::types::{AgentKind, HostRecord, RoomRecord, SeatRecord, SeatStatus};
+    use std::time::Duration;
 
     fn room(id: &str, workspace: &str) -> RoomRecord {
         RoomRecord {
@@ -614,6 +681,19 @@ mod tests {
         }
     }
 
+    fn delivery(id: &str, status: DeliveryStatus) -> DeliveryState {
+        DeliveryState {
+            delivery_id: id.into(),
+            room_id: "room-1".into(),
+            seat_id: "seat-1".into(),
+            seat_name: "reviewer".into(),
+            agent: AgentKind::Claude,
+            status,
+            final_answer: None,
+            error: None,
+        }
+    }
+
     #[test]
     fn empty_delivery_set_is_not_completed_work() {
         assert!(!deliveries_completed(&[]));
@@ -621,19 +701,87 @@ mod tests {
 
     #[test]
     fn queued_delivery_is_not_terminal() {
-        let delivery = DeliveryState {
-            delivery_id: "delivery-1".into(),
-            room_id: "room-1".into(),
-            seat_id: "seat-1".into(),
-            seat_name: "reviewer".into(),
-            agent: AgentKind::Codex,
-            status: DeliveryStatus::Queued,
-            final_answer: None,
-            error: None,
-        };
+        let delivery = delivery("delivery-1", DeliveryStatus::Queued);
 
         assert!(!delivery.terminal());
         assert!(!deliveries_completed(&[delivery]));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_output_wakes_on_updates_and_honors_deadline() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = current_workspace().unwrap();
+        let store = StateStore::new(directory.path().join("rooms.json"));
+        store
+            .mutate(|state| {
+                state
+                    .rooms
+                    .push(room("room-1", &workspace.to_string_lossy()));
+                Ok(())
+            })
+            .unwrap();
+        let runtime = DeliveryRuntime::new();
+        runtime
+            .deliveries
+            .insert(delivery("delivery-1", DeliveryStatus::Running))
+            .await;
+        let server = ConferMcp {
+            store,
+            runtime: runtime.clone(),
+            tool_router: ConferMcp::tool_router(),
+        };
+        let started = tokio::time::Instant::now();
+        let waiting_server = server.clone();
+        let waiter = tokio::spawn(async move {
+            let output = waiting_server
+                .wait_output_inner(WaitOutputArgs {
+                    room_id: "room-1".into(),
+                    delivery_ids: vec!["delivery-1".into()],
+                    timeout_ms: Some(1_000),
+                })
+                .await
+                .unwrap();
+            (started.elapsed(), output)
+        });
+        for _ in 0..10 {
+            if runtime.deliveries.subscriber_count() == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(runtime.deliveries.subscriber_count(), 1);
+
+        runtime
+            .deliveries
+            .set_failed("delivery-1", "failed".into())
+            .await;
+        let (elapsed, output) = waiter.await.unwrap();
+
+        assert_eq!(elapsed, Duration::ZERO);
+        assert!(output.completed);
+        assert!(!output.timed_out);
+        assert!(matches!(
+            output.deliveries[0].status,
+            DeliveryStatus::Failed
+        ));
+
+        runtime
+            .deliveries
+            .insert(delivery("delivery-2", DeliveryStatus::Running))
+            .await;
+        let timeout_started = tokio::time::Instant::now();
+        let output = server
+            .wait_output_inner(WaitOutputArgs {
+                room_id: "room-1".into(),
+                delivery_ids: vec!["delivery-2".into()],
+                timeout_ms: Some(125),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(timeout_started.elapsed(), Duration::from_millis(125));
+        assert!(!output.completed);
+        assert!(output.timed_out);
     }
 
     #[test]
