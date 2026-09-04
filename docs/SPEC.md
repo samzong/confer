@@ -150,7 +150,7 @@ confer skill install [--scope user|project] [--agent <id>]... [--dry-run] [--yes
 
 `confer mcp` serves stdio MCP. Room operations are not exposed as ordinary CLI commands.
 
-MCP and Skill installation are deliberately independent. `confer mcp install` never installs the Skill, and `confer skill install` never changes MCP configuration. MCP installation auto-detects Claude Code, Codex, Cursor, Grok, and Antigravity CLI. Skill installation auto-detects only Claude Code, Codex, Cursor, and Grok.
+MCP and Skill installation are deliberately independent. `confer mcp install` never installs the Skill, and `confer skill install` never changes MCP configuration. Both installation commands support Claude Code, Codex, Cursor, Grok, and Antigravity CLI.
 
 `confer skill install` embeds the [canonical Skill](../skills/confer/SKILL.md) and delegates target paths, conflict protection, updates, scope, and dry-run reporting to Kitup. User scope is the default.
 

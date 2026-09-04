@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
-use crate::{mcp, mcp_host};
+use crate::{mcp, mcp_host, types::AgentKind};
 
 #[derive(Parser)]
 #[command(name = "confer", version, about = "Local multi-agent rooms over MCP")]
@@ -66,7 +66,7 @@ enum SkillCommands {
         scope: Option<String>,
         #[arg(
             long = "agent",
-            help = "Target agent: claude, codex, cursor, or grok. Repeat for multiple agents. Use '*' for all."
+            help = "Target agent: claude, codex, cursor, grok, or agy. Repeat for multiple agents. Use '*' for all."
         )]
         agents: Vec<String>,
         #[arg(long, help = "Show the Kitup install plan without writing")]
@@ -148,7 +148,10 @@ fn supported_skill_agents(
     selector: kitup::AgentSelector,
     scope: kitup::Scope,
 ) -> Result<kitup::AgentSelector> {
-    let supported = ["claude-code", "codex", "cursor", "grok"];
+    let supported = AgentKind::ALL
+        .into_iter()
+        .filter_map(AgentKind::skill_host_id)
+        .collect::<Vec<_>>();
     let selected = match selector {
         kitup::AgentSelector::Auto => {
             kitup::detect_hosts(&kitup::BaseOptions::default(), Some(scope))
@@ -162,15 +165,15 @@ fn supported_skill_agents(
         kitup::AgentSelector::Explicit(values) => {
             let mut selected = Vec::new();
             for value in values {
-                let mapped = match value.as_str() {
-                    "claude" | "claude-code" => "claude-code",
-                    "codex" => "codex",
-                    "cursor" | "cursor-agent" | "agent" => "cursor",
-                    "grok" | "grok-build" => "grok",
-                    other => bail!(
-                        "unsupported Skill host '{other}'; supported hosts: claude, codex, cursor, grok"
-                    ),
-                };
+                let agent = AgentKind::parse(&value).with_context(|| {
+                    format!(
+                        "unsupported Skill host '{value}'; supported hosts: {}",
+                        supported_skill_ids()
+                    )
+                })?;
+                let mapped = agent.skill_host_id().with_context(|| {
+                    format!("{} does not support Skill installation", agent.id())
+                })?;
                 if !selected.iter().any(|item| item == mapped) {
                     selected.push(mapped.to_string());
                 }
@@ -182,6 +185,15 @@ fn supported_skill_agents(
         bail!("no supported Skill hosts were detected");
     }
     Ok(kitup::AgentSelector::Explicit(selected))
+}
+
+fn supported_skill_ids() -> String {
+    AgentKind::ALL
+        .into_iter()
+        .filter(|agent| agent.skill_host_id().is_some())
+        .map(AgentKind::id)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn skill_bundle() -> kitup::SkillBundle {
@@ -201,7 +213,7 @@ fn skill_bundle() -> kitup::SkillBundle {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Commands, McpCommands, SkillCommands};
+    use super::{Cli, Commands, McpCommands, SkillCommands, supported_skill_agents};
     use clap::{CommandFactory, Parser};
 
     #[test]
@@ -238,6 +250,16 @@ mod tests {
                 command: SkillCommands::Install { .. }
             }
         ));
+
+        let selected = supported_skill_agents(
+            kitup::AgentSelector::Explicit(vec!["agy".into()]),
+            kitup::Scope::User,
+        )
+        .unwrap();
+        assert_eq!(
+            selected,
+            kitup::AgentSelector::Explicit(vec!["antigravity-cli".into()])
+        );
     }
 
     #[test]

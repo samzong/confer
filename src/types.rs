@@ -51,6 +51,16 @@ impl AgentKind {
             Self::Agy => &["agy"],
         }
     }
+
+    pub(crate) fn skill_host_id(self) -> Option<&'static str> {
+        match self {
+            Self::Claude => Some("claude-code"),
+            Self::Codex => Some("codex"),
+            Self::Cursor => Some("cursor"),
+            Self::Grok => Some("grok"),
+            Self::Agy => Some("antigravity-cli"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

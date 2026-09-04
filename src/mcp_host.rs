@@ -6,63 +6,11 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
 
+use crate::types::AgentKind;
+
 const SERVER_NAME: &str = "confer";
 const DEFAULT_BIN: &str = "confer";
 const SERVER_ARG: &str = "mcp";
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Host {
-    Claude,
-    Codex,
-    Cursor,
-    Grok,
-    Agy,
-}
-
-impl Host {
-    const ALL: [Self; 5] = [
-        Self::Claude,
-        Self::Codex,
-        Self::Cursor,
-        Self::Grok,
-        Self::Agy,
-    ];
-
-    fn id(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Cursor => "cursor",
-            Self::Grok => "grok",
-            Self::Agy => "agy",
-        }
-    }
-
-    fn binaries(self) -> &'static [&'static str] {
-        match self {
-            Self::Claude => &["claude"],
-            Self::Codex => &["codex"],
-            Self::Cursor => &["agent", "cursor-agent"],
-            Self::Grok => &["grok"],
-            Self::Agy => &["agy"],
-        }
-    }
-
-    fn parse(value: &str) -> Result<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "claude" | "claude-code" => Ok(Self::Claude),
-            "codex" => Ok(Self::Codex),
-            "cursor" | "cursor-agent" | "agent" => Ok(Self::Cursor),
-            "grok" | "grok-build" => Ok(Self::Grok),
-            "agy" | "antigravity" | "antigravity-cli" => Ok(Self::Agy),
-            other => {
-                bail!(
-                    "unknown MCP host '{other}'; supported hosts: claude, codex, cursor, grok, agy"
-                )
-            }
-        }
-    }
-}
 
 enum HostAction {
     Install { bin: String },
@@ -88,13 +36,19 @@ pub(crate) fn uninstall(agents: &[String], dry_run: bool) -> Result<()> {
     run_hosts(resolve_hosts(agents)?, dry_run, HostAction::Uninstall)
 }
 
-fn resolve_hosts(agents: &[String]) -> Result<Vec<Host>> {
+fn resolve_hosts(agents: &[String]) -> Result<Vec<AgentKind>> {
     if agents.is_empty() || agents.iter().any(|agent| agent.trim() == "*") {
-        return Ok(Host::ALL.to_vec());
+        return Ok(AgentKind::ALL.to_vec());
     }
     let mut hosts = Vec::new();
     for agent in agents {
-        let host = Host::parse(agent)?;
+        let host = AgentKind::parse(agent).with_context(|| {
+            format!(
+                "unknown MCP host '{}'; supported hosts: {}",
+                agent.trim(),
+                supported_host_ids()
+            )
+        })?;
         if !hosts.contains(&host) {
             hosts.push(host);
         }
@@ -131,9 +85,9 @@ fn ensure_bin_file(path: &Path) -> Result<()> {
     }
 }
 
-fn add_args(host: Host, bin: &str) -> Option<Vec<String>> {
+fn add_args(host: AgentKind, bin: &str) -> Option<Vec<String>> {
     match host {
-        Host::Claude => Some(vec![
+        AgentKind::Claude => Some(vec![
             "mcp".into(),
             "add".into(),
             "--scope".into(),
@@ -143,7 +97,7 @@ fn add_args(host: Host, bin: &str) -> Option<Vec<String>> {
             bin.into(),
             SERVER_ARG.into(),
         ]),
-        Host::Codex => Some(vec![
+        AgentKind::Codex => Some(vec![
             "mcp".into(),
             "add".into(),
             SERVER_NAME.into(),
@@ -151,8 +105,8 @@ fn add_args(host: Host, bin: &str) -> Option<Vec<String>> {
             bin.into(),
             SERVER_ARG.into(),
         ]),
-        Host::Cursor => None,
-        Host::Grok => Some(vec![
+        AgentKind::Cursor => None,
+        AgentKind::Grok => Some(vec![
             "mcp".into(),
             "add".into(),
             "--scope".into(),
@@ -162,7 +116,7 @@ fn add_args(host: Host, bin: &str) -> Option<Vec<String>> {
             bin.into(),
             SERVER_ARG.into(),
         ]),
-        Host::Agy => Some(vec![
+        AgentKind::Agy => Some(vec![
             "mcp".into(),
             "add".into(),
             SERVER_NAME.into(),
@@ -172,29 +126,29 @@ fn add_args(host: Host, bin: &str) -> Option<Vec<String>> {
     }
 }
 
-fn remove_args(host: Host) -> Option<Vec<String>> {
+fn remove_args(host: AgentKind) -> Option<Vec<String>> {
     match host {
-        Host::Claude => Some(vec![
+        AgentKind::Claude => Some(vec![
             "mcp".into(),
             "remove".into(),
             SERVER_NAME.into(),
             "--scope".into(),
             "user".into(),
         ]),
-        Host::Codex => Some(vec!["mcp".into(), "remove".into(), SERVER_NAME.into()]),
-        Host::Cursor => None,
-        Host::Grok => Some(vec![
+        AgentKind::Codex => Some(vec!["mcp".into(), "remove".into(), SERVER_NAME.into()]),
+        AgentKind::Cursor => None,
+        AgentKind::Grok => Some(vec![
             "mcp".into(),
             "remove".into(),
             "--scope".into(),
             "user".into(),
             SERVER_NAME.into(),
         ]),
-        Host::Agy => Some(vec!["mcp".into(), "remove".into(), SERVER_NAME.into()]),
+        AgentKind::Agy => Some(vec!["mcp".into(), "remove".into(), SERVER_NAME.into()]),
     }
 }
 
-fn run_hosts(hosts: Vec<Host>, dry_run: bool, action: HostAction) -> Result<()> {
+fn run_hosts(hosts: Vec<AgentKind>, dry_run: bool, action: HostAction) -> Result<()> {
     let mut changed = 0usize;
     let mut errors = Vec::new();
     for host in hosts {
@@ -208,7 +162,10 @@ fn run_hosts(hosts: Vec<Host>, dry_run: bool, action: HostAction) -> Result<()> 
         }
     }
     if changed == 0 && errors.is_empty() {
-        bail!("no supported MCP hosts found on PATH (claude, codex, cursor, grok, agy)");
+        bail!(
+            "no supported MCP hosts found on PATH ({})",
+            supported_host_ids()
+        );
     }
     if errors.is_empty() {
         Ok(())
@@ -225,7 +182,7 @@ fn run_hosts(hosts: Vec<Host>, dry_run: bool, action: HostAction) -> Result<()> 
     }
 }
 
-fn apply_host(host: Host, program: &str, dry_run: bool, action: &HostAction) -> Result<()> {
+fn apply_host(host: AgentKind, program: &str, dry_run: bool, action: &HostAction) -> Result<()> {
     match action {
         HostAction::Install { bin } => match add_args(host, bin) {
             Some(args) => {
@@ -424,10 +381,10 @@ fn uses_non_stdio_transport(entry: &Map<String, Value>) -> bool {
     entry.contains_key("url") || entry.get("type").is_some_and(|value| value != "stdio")
 }
 
-fn host_program(host: Host) -> Option<String> {
+fn host_program(host: AgentKind) -> Option<String> {
     let paths = std::env::var_os("PATH")?;
     for directory in std::env::split_paths(&paths) {
-        for name in host.binaries() {
+        for name in host.binary_names() {
             let path = directory.join(name);
             if executable_file(&path) {
                 return Some((*name).to_string());
@@ -435,6 +392,10 @@ fn host_program(host: Host) -> Option<String> {
         }
     }
     None
+}
+
+fn supported_host_ids() -> String {
+    AgentKind::ALL.map(AgentKind::id).join(", ")
 }
 
 #[cfg(unix)]
@@ -495,28 +456,32 @@ fn looks_like_already_exists(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        Host, add_args, read_cursor_config, remove_args, remove_cursor_config, write_cursor_config,
+        add_args, read_cursor_config, remove_args, remove_cursor_config, write_cursor_config,
     };
+    use crate::types::AgentKind;
 
     #[test]
     fn native_commands_match_host_contracts() {
         assert_eq!(
-            add_args(Host::Claude, "confer").unwrap(),
+            add_args(AgentKind::Claude, "confer").unwrap(),
             [
                 "mcp", "add", "--scope", "user", "confer", "--", "confer", "mcp"
             ]
         );
         assert_eq!(
-            add_args(Host::Grok, "confer").unwrap(),
+            add_args(AgentKind::Grok, "confer").unwrap(),
             [
                 "mcp", "add", "--scope", "user", "confer", "--", "confer", "mcp"
             ]
         );
         assert_eq!(
-            add_args(Host::Agy, "confer").unwrap(),
+            add_args(AgentKind::Agy, "confer").unwrap(),
             ["mcp", "add", "confer", "confer", "mcp"]
         );
-        assert_eq!(remove_args(Host::Agy).unwrap(), ["mcp", "remove", "confer"]);
+        assert_eq!(
+            remove_args(AgentKind::Agy).unwrap(),
+            ["mcp", "remove", "confer"]
+        );
     }
 
     #[test]

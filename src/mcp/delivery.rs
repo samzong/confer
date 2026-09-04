@@ -448,7 +448,7 @@ async fn process_queued_delivery(
         message: queued.message.clone(),
         first_message,
     };
-    let output = adapters::run(invocation, None).await;
+    let output = adapters::run(invocation).await;
     let expected_session = reserved;
     let (mismatch, observed_session) = native_session_outcome(
         expected_session.as_deref(),

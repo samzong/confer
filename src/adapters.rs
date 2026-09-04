@@ -5,7 +5,6 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::oneshot;
 
 use crate::types::{AgentKind, Readiness};
 
@@ -84,16 +83,10 @@ pub(crate) async fn reserve_session(agent: AgentKind, executable: &Path) -> Resu
     }
 }
 
-pub(crate) async fn run(
-    invocation: Invocation,
-    mut session_sender: Option<oneshot::Sender<Result<String, String>>>,
-) -> AdapterOutput {
+pub(crate) async fn run(invocation: Invocation) -> AdapterOutput {
     let mut command = match build_command(&invocation) {
         Ok(command) => command,
         Err(error) => {
-            if let Some(sender) = session_sender.take() {
-                let _ = sender.send(Err(error.to_string()));
-            }
             return AdapterOutput {
                 observed_session_id: None,
                 answer: None,
@@ -110,9 +103,6 @@ pub(crate) async fn run(
         Ok(child) => child,
         Err(error) => {
             let message = format!("failed to start {}: {error}", invocation.agent.id());
-            if let Some(sender) = session_sender.take() {
-                let _ = sender.send(Err(message.clone()));
-            }
             return AdapterOutput {
                 observed_session_id: None,
                 answer: None,
@@ -141,16 +131,6 @@ pub(crate) async fn run(
                     saw_json = true;
                     if let Some(id) = extract_session_id(&value) {
                         observed_session_id = Some(id);
-                    }
-                    if session_ready(invocation.agent, &value)
-                        && let (Some(id), Some(sender)) = (
-                            observed_session_id
-                                .clone()
-                                .or_else(|| invocation.native_session_id.clone()),
-                            session_sender.take(),
-                        )
-                    {
-                        let _ = sender.send(Ok(id));
                     }
                     if let Some(candidate) = extract_answer(&value) {
                         answer = Some(candidate);
@@ -186,22 +166,6 @@ pub(crate) async fn run(
             native_error = Some(error);
         }
         append_streamed_text(&value, &mut streamed_text);
-    }
-    if let Some(sender) = session_sender.take() {
-        let stdout_detail = if saw_json {
-            native_error.as_deref().unwrap_or("")
-        } else {
-            &raw
-        };
-        let message = match (&status, observed_session_id.clone()) {
-            (Ok(status), Some(id)) if status.success() => Ok(id),
-            _ => Err(error_text(
-                "native session did not become ready",
-                &stderr,
-                stdout_detail,
-            )),
-        };
-        let _ = sender.send(message);
     }
     let status = match status {
         Ok(status) => status,
@@ -511,25 +475,6 @@ fn extract_session_id(value: &Value) -> Option<String> {
     object.values().find_map(extract_session_id)
 }
 
-fn session_ready(agent: AgentKind, value: &Value) -> bool {
-    let Some(object) = value.as_object() else {
-        return false;
-    };
-    let kind = object.get("type").and_then(Value::as_str);
-    match agent {
-        AgentKind::Claude => {
-            kind == Some("assistant")
-                || kind == Some("result")
-                || (kind == Some("system")
-                    && object.get("subtype").and_then(Value::as_str) == Some("commands_changed"))
-        }
-        AgentKind::Codex => kind == Some("thread.started"),
-        AgentKind::Grok => kind == Some("available_commands"),
-        AgentKind::Cursor => true,
-        AgentKind::Agy => object.contains_key("conversation_id"),
-    }
-}
-
 fn extract_answer(value: &Value) -> Option<String> {
     let object = value.as_object()?;
     if let Some(result) = object
@@ -688,7 +633,7 @@ fn truncate(value: &str) -> String {
 mod tests {
     use super::{
         Invocation, append_streamed_text, build_command, extract_answer, extract_native_error,
-        extract_session_id, session_ready,
+        extract_session_id,
     };
     use crate::types::AgentKind;
     use std::path::PathBuf;
@@ -741,30 +686,6 @@ mod tests {
             &mut output,
         );
         assert_eq!(output, "GROK_OK");
-    }
-
-    #[test]
-    fn recognizes_native_session_ready_events() {
-        assert!(session_ready(
-            AgentKind::Claude,
-            &serde_json::json!({ "type": "system", "subtype": "commands_changed" })
-        ));
-        assert!(!session_ready(
-            AgentKind::Claude,
-            &serde_json::json!({ "type": "system", "subtype": "init" })
-        ));
-        assert!(session_ready(
-            AgentKind::Codex,
-            &serde_json::json!({ "type": "thread.started" })
-        ));
-        assert!(session_ready(
-            AgentKind::Grok,
-            &serde_json::json!({ "type": "available_commands" })
-        ));
-        assert!(session_ready(
-            AgentKind::Agy,
-            &serde_json::json!({ "conversation_id": "conv-1", "status": "SUCCESS" })
-        ));
     }
 
     #[test]
