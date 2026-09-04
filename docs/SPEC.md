@@ -1,4 +1,4 @@
-# Confer v0.1 Specification
+# Confer Design
 
 ## Product definition
 
@@ -198,25 +198,3 @@ Tool errors must identify the room, seat, agent, and failing operation when thos
 - timeout with partial results.
 
 Confer must not reinterpret a failed send as success, silently create a replacement session for a stale native session, or retry a message that may have executed.
-
-## v0.1 acceptance
-
-The release is acceptable when all of the following are proven from a clean checkout:
-
-- `make check` passes formatting, lint, tests, and dependency audit.
-- `make install` installs the `confer` binary used by subsequent checks.
-- `confer mcp capabilities` reports exactly the eight room tools.
-- `confer mcp install` installs or updates `confer` in detected MCP hosts without disturbing unrelated entries.
-- `confer skill install` installs the Kitup-owned Skill into detected Claude Code, Codex, Cursor, and Grok hosts.
-- Local readiness finds Claude Code, Codex, Cursor Agent, Grok, and Antigravity CLI without a model call.
-- Real adapter smoke calls create and resume native sessions with final-output parsing.
-- A newly initialized Git repository can use an installed host’s Confer MCP to create a room, send a real request to at least one external agent, wait for the answer, list and resume the room, and close it.
-- Two external seats can receive the same prompt without seeing one another’s answers.
-- Deleting `~/.confer/rooms.json` resets Confer discovery without deleting native sessions.
-- The private GitHub repository contains the verified source, a signed-off v0.1.0 release commit and tag, and a GitHub v0.1.0 release.
-
-## Release boundary
-
-v0.1.0 ships one Rust application binary and the embedded Skill bundle. It does not publish a Rust library API or a crates.io package. The GitHub repository remains private until the owner chooses otherwise.
-
-The first release prioritizes the local macOS environment used for acceptance. CI must still run the repository gate, and the release workflow must produce versioned binary archives for supported build targets configured by the project.
