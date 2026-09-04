@@ -24,9 +24,11 @@ MCP is the public protocol. Headless commands and native streaming protocols rem
 
 A room belongs to one normalized workspace. In a Git repository, the workspace is the canonical result of `git rev-parse --show-toplevel`. Different Git worktrees are different workspaces. Outside Git, the canonical current directory is the workspace.
 
-The current MCP host is a room member and moderator. The default room size is three members including the current host, so the usual default is two external seats. At creation, `target_size` requests an initial total member count including the host. Explicit seats may increase that initial size, and `add_seat` may grow an active room later. The same agent type may occupy multiple seats, with the same or different models.
+The current MCP host is a room member and moderator. The default room size is three members including the current host, so the usual default is two external seats. At creation, `target_size` requests an initial total member count including the host. Explicit seats may increase that initial size, and `add_seat` may grow a room later. The same agent type may occupy multiple seats, with the same or different models.
 
-A room is the task container. Active rooms may add seats as new roles become useful and retire seats whose role is complete. Retiring a seat preserves its metadata and native session mapping but permanently removes it from direct, multicast, and broadcast addressing.
+A room is the task container for one initiating host session context. The host reuses a room only while its ID remains part of that current context. A new host session creates a new room even in the same workspace, and an explicit user request for a new room always creates one. Workspace matching never implies automatic reuse. Historical discovery happens only when the user explicitly asks to continue an earlier room.
+
+Rooms may add seats as new roles become useful and retire seats whose role is complete. Retiring a seat preserves its metadata and native session mapping but permanently removes it from direct, multicast, and broadcast addressing.
 
 Each external seat has these optional selection fields:
 
@@ -42,7 +44,7 @@ Each external seat has these optional selection fields:
 
 `name` is a room address, not a built-in role. `instructions` are visible only to that seat and remain part of its native session context. Confer generates a unique seat name when none is supplied.
 
-Rooms are `active` or `inactive`. Closing a room marks it inactive. It does not delete room metadata or native sessions. Resuming an inactive room makes it active again. There is no automatic expiration or garbage collection.
+Rooms have no lifecycle status, automatic expiration, or garbage collection. A persisted room remains addressable by ID in its workspace. Starting a new room does not change or delete earlier rooms.
 
 ## Local state
 
@@ -55,19 +57,19 @@ Confer stores disposable room metadata and advisory seat lease files:
 
 `rooms.json` contains a schema version and room records with:
 
-- room ID, name, workspace root, status, and timestamps;
-- current host identity when known;
+- room ID, name, workspace root, and timestamps;
+- originating host identity when known;
 - external seat identity and selection fields;
 - external seat active or retired status;
 - native agent session ID and adapter recovery fields when a session has started.
 
 These files do not contain message bodies, agent replies, pending delivery state, full transcripts, tool calls, thinking, or code snapshots. Seat lease files contain no semantic state. Native agent stores remain the source of truth for conversation history.
 
-Room metadata writes use a short advisory lock and atomic replacement. Current writes use schema version 2; version 1 remains readable and upgrades on the next mutation, while unknown newer versions fail closed. Removing the disposable room cache resets Confer discovery without deleting native agent sessions.
+Room metadata writes use a short advisory lock and atomic replacement. Current writes use schema version 3; versions 1 and 2 remain readable and normalize on the next mutation, while unknown newer versions fail closed. Removing the disposable room cache resets Confer discovery without deleting native agent sessions.
 
 ## Readiness and selection
 
-Readiness checks are local and run when a room is created or resumed, when a seat is added, and before each delivery starts. They inspect the executable and local authentication or configuration state without calling a model or checking quota. A positive result means `locally_ready`; it does not guarantee provider availability, model access, or remaining quota.
+Readiness checks are local and run when a room is created, when a seat is added, and before each delivery starts. They inspect the executable and local authentication or configuration state without calling a model or checking quota. A positive result means `locally_ready`; it does not guarantee provider availability, model access, or remaining quota.
 
 The current host, guided by the Skill, normally selects seat specifications from the task. Explicit user choices take precedence. When the host supplies no seats, Confer fills the requested size from locally ready supported agents.
 
@@ -79,7 +81,7 @@ If a requested participant is unavailable, Confer may replace it with another lo
 
 The first queued message to an external seat creates its native session and records the native session ID. Every seat has one in-process FIFO worker. A sent message enters that worker, starts promptly when the seat is idle, and remains `queued` while an earlier delivery runs. Different seats may run concurrently. A cross-process file lease serializes workers from separate MCP processes, but FIFO ordering is guaranteed only within one live MCP process. Queue processing does not retry a native message after dispatch may have begun.
 
-Delivery tracking, pending Queue messages, and workers exist only in the live MCP process. If that process exits, queued messages that have not started are lost, unfinished outputs and delivery IDs are lost, its lease is released, and native work may have continued. Resuming the room restores native session addressing, not pending messages or in-flight certainty. The caller must verify uncertain native work before sending that seat another message. Confer never automatically redelivers an uncertain message because the first execution may have changed code.
+Delivery tracking, pending Queue messages, and workers exist only in the live MCP process. If that process exits, queued messages that have not started are lost, unfinished outputs and delivery IDs are lost, its lease is released, and native work may have continued. Persisted seat metadata keeps native session addressing, but not pending messages or in-flight certainty. The caller must verify uncertain native work before sending that seat another message. Confer never automatically redelivers an uncertain message because the first execution may have changed code.
 
 ## Message visibility
 
@@ -87,7 +89,7 @@ Each seat has a private native session, sees only addressed messages, and return
 
 ## MCP tools
 
-The public MCP surface contains eight tools.
+The public MCP surface contains six tools.
 
 ### `create_room`
 
@@ -104,17 +106,17 @@ Output includes the room ID, normalized workspace, roster, readiness results, an
 
 ### `add_seat`
 
-Adds one private seat to an active room in the current workspace. The input uses the same agent, model, effort, name, and instruction fields as room creation. Existing and retired seat names remain reserved. Output includes the updated room, readiness results, and any replacement.
+Adds one private seat to a room in the current workspace. The input uses the same agent, model, effort, name, and instruction fields as room creation. Existing and retired seat names remain reserved. Output includes the updated room, readiness results, and any replacement.
 
 ### `retire_seat`
 
-Retires one seat by name or ID in an active room in the current workspace. A busy seat returns `seat_busy`. Retirement preserves the native session mapping but is irreversible.
+Retires one seat by name or ID in a room in the current workspace. A busy seat returns `seat_busy`. Retirement preserves the native session mapping but is irreversible.
 
 ### `list_rooms`
 
-Lists active and inactive rooms. `scope` defaults to `current`; `all` returns metadata for every recorded workspace. Discovery does not allow `send_message`, `resume_room`, `add_seat`, or `retire_seat` to cross workspace boundaries.
+Lists rooms. `scope` defaults to `current`; `all` returns metadata for every recorded workspace. The host calls this only when the user explicitly asks to recover an earlier room. Discovery does not allow `send_message`, `add_seat`, or `retire_seat` to cross workspace boundaries.
 
-Output includes room ID, name, status, participants, native-session availability, and timestamps. It never returns message content.
+Output includes room ID, name, participants, native-session availability, and timestamps. It never returns message content.
 
 ### `send_message`
 
@@ -133,14 +135,6 @@ The send returns one receipt and new `delivery_id` per recipient plus immediate 
 Waits for specified deliveries or the room’s current live deliveries. `timeout_ms` defaults to `120000`, accepts `0` for an immediate snapshot, and is capped at `600000`.
 
 Output contains each delivery’s `queued`, `running`, `completed`, or `failed` status, final assistant answer, and error. It does not expose thinking, token deltas, or intermediate tool events. A timeout returns completed results and current non-terminal statuses without cancelling them.
-
-### `resume_room`
-
-Reactivates one room by `room_id`, rechecks local readiness, and restores adapter addressing from native session metadata. It returns the current roster, readiness results, and replacements. Only unstarted unavailable seats may be replaced; a started seat keeps its native session mapping even when temporarily unready. It does not make a model call.
-
-### `close_room`
-
-Marks one room inactive. It does not kill dispatched agent work, delete native sessions, delete cached room metadata, or revert code changes.
 
 ## CLI surface
 

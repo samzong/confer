@@ -18,7 +18,7 @@ use tokio::sync::{Mutex, mpsc};
 use crate::adapters::{self, Invocation};
 use crate::state::{StateStore, current_workspace};
 use crate::types::{
-    AgentKind, HostRecord, Readiness, Replacement, RoomRecord, RoomStatus, SeatRecord, SeatStatus,
+    AgentKind, HostRecord, Readiness, Replacement, RoomRecord, SeatRecord, SeatStatus,
 };
 
 const DEFAULT_ROOM_SIZE: usize = 3;
@@ -102,11 +102,6 @@ struct WaitOutputArgs {
     timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct RoomIdArgs {
-    room_id: String,
-}
-
 #[derive(Clone, Debug, Serialize)]
 struct SeatView {
     id: String,
@@ -123,7 +118,6 @@ struct RoomView {
     id: String,
     name: String,
     workspace: String,
-    status: RoomStatus,
     host_agent: Option<String>,
     seats: Vec<SeatView>,
     created_at: String,
@@ -154,13 +148,6 @@ struct AddSeatOutput {
 #[derive(Debug, Serialize)]
 struct RetireSeatOutput {
     room: RoomView,
-}
-
-#[derive(Debug, Serialize)]
-struct ResumeRoomOutput {
-    room: RoomView,
-    readiness: Vec<Readiness>,
-    replacements: Vec<Replacement>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -219,11 +206,6 @@ struct WaitOutput {
     completed: bool,
     timed_out: bool,
     deliveries: Vec<DeliveryState>,
-}
-
-#[derive(Debug, Serialize)]
-struct CloseRoomOutput {
-    room: RoomView,
 }
 
 #[derive(Debug, Serialize)]
@@ -305,7 +287,7 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "Add one private seat to an active room in the current Git worktree. The seat starts a new native session on its first message. Explicit unavailable agents may be replaced, and every replacement is reported.",
+        description = "Add one private seat to a room in the current Git worktree. The seat starts a new native session on its first message. Explicit unavailable agents may be replaced, and every replacement is reported.",
         annotations(
             title = "Add seat",
             read_only_hint = false,
@@ -321,7 +303,7 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "Retire one seat in an active room in the current Git worktree. A retired seat keeps its metadata and native session mapping but can no longer receive messages. A known running delivery must finish first.",
+        description = "Retire one seat in a room in the current Git worktree. A retired seat keeps its metadata and native session mapping but can no longer receive messages. A known running delivery must finish first.",
         annotations(
             title = "Retire seat",
             read_only_hint = false,
@@ -337,7 +319,7 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "List active and inactive Confer rooms. scope defaults to current for the current Git worktree; use all to inspect rooms across every recorded workspace. Returns room and participant metadata only, never messages or agent outputs.",
+        description = "List Confer rooms. scope defaults to current for the current Git worktree; use all to inspect rooms across every recorded workspace. Returns room and participant metadata only, never messages or agent outputs.",
         annotations(
             title = "List rooms",
             read_only_hint = true,
@@ -386,38 +368,6 @@ impl ConferMcp {
         Ok(json_result(self.wait_output_inner(args).await))
     }
 
-    #[tool(
-        description = "Reactivate a persisted room by ID for the current Git worktree. Rechecks local agent readiness and restores native session addressing without calling a model. Unavailable participants may be replaced and are reported.",
-        annotations(
-            title = "Resume room",
-            read_only_hint = false,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
-    async fn resume_room(
-        &self,
-        Parameters(args): Parameters<RoomIdArgs>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
-        Ok(json_result(self.resume_room_inner(&args.room_id)))
-    }
-
-    #[tool(
-        description = "Mark a room inactive while keeping its lightweight room and native session mapping for later resume. Does not kill running agents, delete native sessions, remove cached metadata, or revert code changes.",
-        annotations(
-            title = "Close room",
-            read_only_hint = false,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
-    async fn close_room(
-        &self,
-        Parameters(args): Parameters<RoomIdArgs>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
-        Ok(json_result(self.close_room_inner(&args.room_id).await))
-    }
-
     fn create_room_inner(&self, args: CreateRoomArgs) -> Result<CreateRoomOutput> {
         let workspace = current_workspace()?;
         let readiness = adapters::readiness();
@@ -439,7 +389,6 @@ impl ConferMcp {
             name: normalized_name(args.name.as_deref(), &id),
             id,
             workspace: workspace.to_string_lossy().into_owned(),
-            status: RoomStatus::Active,
             host: HostRecord { agent: host_agent },
             seats,
             created_at: now.clone(),
@@ -461,12 +410,6 @@ impl ConferMcp {
         let workspace_text = workspace.to_string_lossy().into_owned();
         let readiness = adapters::readiness();
         let room = self.store.room_for_workspace(&args.room_id, &workspace)?;
-        if room.status != RoomStatus::Active {
-            bail!(
-                "room '{}' is inactive; resume it before adding a seat",
-                room.id
-            );
-        }
         let names = room
             .seats
             .iter()
@@ -488,12 +431,6 @@ impl ConferMcp {
                 .with_context(|| {
                     format!("room '{}' was not found in this workspace", args.room_id)
                 })?;
-            if room.status != RoomStatus::Active {
-                bail!(
-                    "room '{}' is inactive; resume it before adding a seat",
-                    room.id
-                );
-            }
             if room.seats.iter().any(|existing| existing.name == seat.name) {
                 bail!("duplicate seat name '{}'", seat.name);
             }
@@ -512,12 +449,6 @@ impl ConferMcp {
         let workspace = current_workspace()?;
         let workspace_text = workspace.to_string_lossy().into_owned();
         let room = self.store.room_for_workspace(&args.room_id, &workspace)?;
-        if room.status != RoomStatus::Active {
-            bail!(
-                "room '{}' is inactive; resume it before retiring a seat",
-                room.id
-            );
-        }
         let seat = room
             .seats
             .iter()
@@ -536,12 +467,6 @@ impl ConferMcp {
                 .with_context(|| {
                     format!("room '{}' was not found in this workspace", args.room_id)
                 })?;
-            if room.status != RoomStatus::Active {
-                bail!(
-                    "room '{}' is inactive; resume it before retiring a seat",
-                    room.id
-                );
-            }
             let seat = room
                 .seats
                 .iter_mut()
@@ -580,12 +505,6 @@ impl ConferMcp {
         }
         let workspace = current_workspace()?;
         let room = self.store.room_for_workspace(&args.room_id, &workspace)?;
-        if room.status != RoomStatus::Active {
-            bail!(
-                "room '{}' is inactive; resume it before sending messages",
-                room.id
-            );
-        }
         let seats = resolve_recipients(&room, &args.recipients)?;
         let mut receipts = Vec::new();
         for seat in seats {
@@ -771,90 +690,6 @@ impl ConferMcp {
         }
         Ok(deliveries)
     }
-
-    fn resume_room_inner(&self, room_id: &str) -> Result<ResumeRoomOutput> {
-        self.resume_room_with_readiness(room_id, adapters::readiness())
-    }
-
-    fn resume_room_with_readiness(
-        &self,
-        room_id: &str,
-        readiness: Vec<Readiness>,
-    ) -> Result<ResumeRoomOutput> {
-        let workspace = current_workspace()?;
-        let workspace_text = workspace.to_string_lossy().into_owned();
-        let ready_agents = readiness
-            .iter()
-            .filter(|item| item.locally_ready)
-            .map(|item| item.agent)
-            .collect::<Vec<_>>();
-        if ready_agents.is_empty() {
-            bail!("no locally ready supported agents were found");
-        }
-        let existing = self.store.room_for_workspace(room_id, &workspace)?;
-        let mut replaceable = HashSet::new();
-        let mut seat_leases = Vec::new();
-        for seat in &existing.seats {
-            let ready = readiness
-                .iter()
-                .any(|item| item.agent == seat.agent && item.locally_ready);
-            if seat.status == SeatStatus::Retired || ready || seat.native_session_id.is_some() {
-                continue;
-            }
-            match self.store.try_acquire_seat_lease(room_id, &seat.id) {
-                Ok(lease) => {
-                    replaceable.insert(seat.id.clone());
-                    seat_leases.push(lease);
-                }
-                Err(error) if error.to_string().starts_with("seat_busy:") => {}
-                Err(error) => return Err(error),
-            }
-        }
-        let mut replacements = Vec::new();
-        let room = self.store.mutate(|state| {
-            let room = state
-                .rooms
-                .iter_mut()
-                .find(|room| room.id == room_id && room.workspace == workspace_text)
-                .with_context(|| format!("room '{room_id}' was not found in this workspace"))?;
-            replacements =
-                replace_unstarted_unready_seats(room, &readiness, &ready_agents, &replaceable);
-            room.status = RoomStatus::Active;
-            if let Some(agent) = detect_host_agent(None) {
-                room.host.agent = Some(agent);
-            }
-            room.updated_at = timestamp();
-            Ok(room.clone())
-        })?;
-        drop(seat_leases);
-        Ok(ResumeRoomOutput {
-            room: room_view(&room),
-            readiness,
-            replacements,
-        })
-    }
-
-    async fn close_room_inner(&self, room_id: &str) -> Result<CloseRoomOutput> {
-        let workspace = current_workspace()?;
-        let workspace_text = workspace.to_string_lossy().into_owned();
-        let room = self.store.mutate(|state| {
-            let room = state
-                .rooms
-                .iter_mut()
-                .find(|room| room.id == room_id && room.workspace == workspace_text)
-                .with_context(|| format!("room '{room_id}' was not found in this workspace"))?;
-            room.status = RoomStatus::Inactive;
-            room.updated_at = timestamp();
-            Ok(room.clone())
-        })?;
-        self.deliveries
-            .lock()
-            .await
-            .retain(|_, delivery| delivery.room_id != room.id || !delivery.terminal());
-        Ok(CloseRoomOutput {
-            room: room_view(&room),
-        })
-    }
 }
 
 async fn run_seat_worker(
@@ -888,16 +723,7 @@ async fn process_queued_delivery(
     deliveries: &Arc<Mutex<HashMap<String, DeliveryState>>>,
 ) {
     let room = match store.room_for_workspace(&queued.room_id, &queued.workspace) {
-        Ok(room) if room.status == RoomStatus::Active => room,
-        Ok(_) => {
-            set_delivery_failed(
-                deliveries,
-                &queued.delivery_id,
-                format!("room '{}' became inactive before delivery", queued.room_id),
-            )
-            .await;
-            return;
-        }
+        Ok(room) => room,
         Err(error) => {
             set_delivery_failed(deliveries, &queued.delivery_id, error.to_string()).await;
             return;
@@ -1020,37 +846,6 @@ async fn set_delivery_failed(
 
 fn seat_key(room_id: &str, seat_id: &str) -> String {
     format!("{room_id}:{seat_id}")
-}
-
-fn replace_unstarted_unready_seats(
-    room: &mut RoomRecord,
-    readiness: &[Readiness],
-    ready_agents: &[AgentKind],
-    replaceable: &HashSet<String>,
-) -> Vec<Replacement> {
-    let mut replacements = Vec::new();
-    for seat in &mut room.seats {
-        if seat.status == SeatStatus::Retired {
-            continue;
-        }
-        let ready = readiness
-            .iter()
-            .any(|item| item.agent == seat.agent && item.locally_ready);
-        if ready || seat.native_session_id.is_some() || !replaceable.contains(&seat.id) {
-            continue;
-        }
-        let replacement = ready_agents[0];
-        replacements.push(Replacement {
-            seat_name: seat.name.clone(),
-            requested_agent: seat.agent.id().into(),
-            replacement_agent: replacement.id().into(),
-            reason: "original agent is not locally ready".into(),
-        });
-        seat.agent = replacement;
-        seat.model = None;
-        seat.reasoning_effort = None;
-    }
-    replacements
 }
 
 #[tool_handler]
@@ -1306,7 +1101,6 @@ fn room_view(room: &RoomRecord) -> RoomView {
         id: room.id.clone(),
         name: room.name.clone(),
         workspace: room.workspace.clone(),
-        status: room.status,
         host_agent: room.host.agent.clone(),
         seats: room
             .seats
@@ -1357,7 +1151,7 @@ fn server_info() -> ServerInfo {
     ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
         .with_server_info(Implementation::new("confer", env!("CARGO_PKG_VERSION")))
         .with_instructions(
-            "Create a room when the user asks to consult or coordinate other coding agents. The current host moderates every relay. Seats are private by default: do not reveal one seat's answer to another unless the user requests critique or collaboration. Messages use per-seat FIFO queues. Use list_rooms and resume_room to continue a room in this Git worktree. Close completed rooms; they remain resumable.",
+            "Create a room when the user asks to consult or coordinate other coding agents. Reuse a room only when its ID is already part of the current host session context; create a new room for a new host session or when the user asks for one. Use list_rooms only to recover a room the user explicitly wants to continue. The current host moderates every relay. Seats are private by default: do not reveal one seat's answer to another unless the user requests critique or collaboration. Messages use per-seat FIFO queues.",
         )
 }
 
@@ -1392,14 +1186,11 @@ mod tests {
     use super::{
         ConferMcp, DeliveryState, DeliveryStatus, ListRoomsArgs, RetireSeatArgs, RoomScope,
         SeatSpecInput, capabilities, deliveries_completed, finish_delivery, native_session_outcome,
-        replace_unstarted_unready_seats, resolve_recipients, rooms_for_scope, seat_key,
-        select_seats, select_seats_with_names,
+        resolve_recipients, rooms_for_scope, seat_key, select_seats, select_seats_with_names,
     };
     use crate::state::{StateStore, current_workspace};
-    use crate::types::{
-        AgentKind, HostRecord, Readiness, RoomRecord, RoomStatus, SeatRecord, SeatStatus,
-    };
-    use std::collections::{HashMap, HashSet};
+    use crate::types::{AgentKind, HostRecord, Readiness, RoomRecord, SeatRecord, SeatStatus};
+    use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -1412,12 +1203,11 @@ mod tests {
         }
     }
 
-    fn room(id: &str, workspace: &str, status: RoomStatus) -> RoomRecord {
+    fn room(id: &str, workspace: &str) -> RoomRecord {
         RoomRecord {
             id: id.into(),
             name: id.into(),
             workspace: workspace.into(),
-            status,
             host: HostRecord {
                 agent: Some("codex".into()),
             },
@@ -1472,7 +1262,7 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_expose_the_eight_room_tools() {
+    fn capabilities_expose_the_six_room_tools() {
         let mut names = capabilities()
             .unwrap()
             .tools
@@ -1485,10 +1275,8 @@ mod tests {
             names,
             [
                 "add_seat",
-                "close_room",
                 "create_room",
                 "list_rooms",
-                "resume_room",
                 "retire_seat",
                 "send_message",
                 "wait_output",
@@ -1560,7 +1348,7 @@ mod tests {
 
     #[test]
     fn retired_seat_is_not_addressable_or_broadcast() {
-        let mut room = room("room-1", "/tmp/project", RoomStatus::Active);
+        let mut room = room("room-1", "/tmp/project");
         room.seats = vec![
             SeatRecord {
                 id: "active".into(),
@@ -1597,10 +1385,7 @@ mod tests {
 
     #[test]
     fn all_scope_lists_rooms_across_workspaces() {
-        let rooms = vec![
-            room("current", "/tmp/current", RoomStatus::Active),
-            room("other", "/tmp/other", RoomStatus::Inactive),
-        ];
+        let rooms = vec![room("current", "/tmp/current"), room("other", "/tmp/other")];
 
         assert_eq!(
             rooms_for_scope(rooms.clone(), RoomScope::Current, "/tmp/current").len(),
@@ -1669,7 +1454,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = StateStore::new(dir.path().join("rooms.json"));
         let workspace = current_workspace().unwrap();
-        let mut record = room("room-1", &workspace.to_string_lossy(), RoomStatus::Active);
+        let mut record = room("room-1", &workspace.to_string_lossy());
         record.seats.push(SeatRecord {
             id: "seat-1".into(),
             name: "reviewer".into(),
@@ -1706,135 +1491,5 @@ mod tests {
         assert_eq!(seat.status, SeatStatus::Retired);
         assert_eq!(seat.native_session_id.as_deref(), Some("session-1"));
         assert!(receiver.recv().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn close_resume_keeps_one_worker_for_the_seat() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = StateStore::new(dir.path().join("rooms.json"));
-        let workspace = current_workspace().unwrap();
-        let mut record = room("room-1", &workspace.to_string_lossy(), RoomStatus::Active);
-        record.seats.push(SeatRecord {
-            id: "seat-1".into(),
-            name: "reviewer".into(),
-            agent: AgentKind::Codex,
-            model: None,
-            reasoning_effort: None,
-            instructions: None,
-            native_session_id: Some("session-1".into()),
-            status: SeatStatus::Active,
-        });
-        store
-            .mutate(|state| {
-                state.rooms.push(record);
-                Ok(())
-            })
-            .unwrap();
-        let service = service(store.clone());
-        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
-        let original = sender.clone();
-        service
-            .workers
-            .lock()
-            .await
-            .insert(seat_key("room-1", "seat-1"), sender);
-
-        service.close_room_inner("room-1").await.unwrap();
-        store
-            .mutate(|state| {
-                state.rooms[0].status = RoomStatus::Active;
-                Ok(())
-            })
-            .unwrap();
-        let resumed = service.worker_sender(seat_key("room-1", "seat-1")).await;
-
-        assert!(original.same_channel(&resumed));
-    }
-
-    #[test]
-    fn resume_preserves_started_session_when_agent_is_temporarily_unready() {
-        let mut room = RoomRecord {
-            id: "room-1".into(),
-            name: "room".into(),
-            workspace: "/tmp/project".into(),
-            status: RoomStatus::Inactive,
-            host: HostRecord {
-                agent: Some("codex".into()),
-            },
-            seats: vec![SeatRecord {
-                id: "seat-1".into(),
-                name: "planner".into(),
-                agent: AgentKind::Codex,
-                model: Some("model".into()),
-                reasoning_effort: Some("high".into()),
-                instructions: None,
-                native_session_id: Some("thread-1".into()),
-                status: SeatStatus::Active,
-            }],
-            created_at: "2026-01-01T00:00:00Z".into(),
-            updated_at: "2026-01-01T00:00:00Z".into(),
-        };
-        let readiness = vec![ready(AgentKind::Claude)];
-        let replaceable = HashSet::from(["seat-1".to_string()]);
-        let replacements = replace_unstarted_unready_seats(
-            &mut room,
-            &readiness,
-            &[AgentKind::Claude],
-            &replaceable,
-        );
-
-        assert!(replacements.is_empty());
-        assert_eq!(room.seats[0].agent, AgentKind::Codex);
-        assert_eq!(room.seats[0].native_session_id.as_deref(), Some("thread-1"));
-    }
-
-    #[test]
-    fn resume_does_not_replace_a_leased_first_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = StateStore::new(dir.path().join("rooms.json"));
-        let workspace = current_workspace().unwrap();
-        let mut record = room("room-1", &workspace.to_string_lossy(), RoomStatus::Inactive);
-        record.seats.push(SeatRecord {
-            id: "seat-1".into(),
-            name: "reviewer".into(),
-            agent: AgentKind::Agy,
-            model: None,
-            reasoning_effort: None,
-            instructions: None,
-            native_session_id: None,
-            status: SeatStatus::Active,
-        });
-        store
-            .mutate(|state| {
-                state.rooms.push(record);
-                Ok(())
-            })
-            .unwrap();
-        let lease_store = StateStore::new(store.path().to_path_buf());
-        let lease = lease_store
-            .try_acquire_seat_lease("room-1", "seat-1")
-            .unwrap();
-        let service = service(store.clone());
-
-        let blocked = service
-            .resume_room_with_readiness("room-1", vec![ready(AgentKind::Claude)])
-            .unwrap();
-
-        assert!(blocked.replacements.is_empty());
-        assert_eq!(blocked.room.seats[0].agent, AgentKind::Agy);
-
-        drop(lease);
-        store
-            .mutate(|state| {
-                state.rooms[0].status = RoomStatus::Inactive;
-                Ok(())
-            })
-            .unwrap();
-        let replaced = service
-            .resume_room_with_readiness("room-1", vec![ready(AgentKind::Claude)])
-            .unwrap();
-
-        assert_eq!(replaced.replacements.len(), 1);
-        assert_eq!(replaced.room.seats[0].agent, AgentKind::Claude);
     }
 }

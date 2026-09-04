@@ -145,7 +145,7 @@ impl StateStore {
         }
         let state: RoomsFile = serde_json::from_str(&body)
             .with_context(|| format!("failed to parse {}", self.path.display()))?;
-        if !matches!(state.schema_version, 1 | ROOMS_SCHEMA_VERSION) {
+        if !matches!(state.schema_version, 1 | 2 | ROOMS_SCHEMA_VERSION) {
             bail!(
                 "unsupported Confer room cache schema {}",
                 state.schema_version
@@ -201,7 +201,7 @@ pub(crate) fn current_workspace() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::StateStore;
-    use crate::types::{HostRecord, RoomRecord, RoomStatus, SeatStatus};
+    use crate::types::{HostRecord, RoomRecord, SeatStatus};
 
     #[test]
     fn cache_round_trip_preserves_rooms() {
@@ -213,7 +213,6 @@ mod tests {
                     id: "room-1".into(),
                     name: "Review".into(),
                     workspace: "/tmp/project".into(),
-                    status: RoomStatus::Inactive,
                     host: HostRecord {
                         agent: Some("codex".into()),
                     },
@@ -228,39 +227,52 @@ mod tests {
         let state = store.load().unwrap();
         assert_eq!(state.rooms.len(), 1);
         assert_eq!(state.rooms[0].id, "room-1");
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(store.path()).unwrap()).unwrap();
+        assert_eq!(persisted["schema_version"], 3);
+        assert!(persisted["rooms"][0].get("status").is_none());
     }
 
     #[test]
     fn cache_rejects_unknown_schema() {
         let dir = tempfile::tempdir().unwrap();
         let store = StateStore::new(dir.path().join("rooms.json"));
-        std::fs::write(store.path(), r#"{"schema_version":3,"rooms":[]}"#).unwrap();
+        std::fs::write(store.path(), r#"{"schema_version":4,"rooms":[]}"#).unwrap();
         assert!(store.load().is_err());
     }
 
     #[test]
-    fn cache_mutation_upgrades_legacy_schema() {
+    fn cache_mutation_upgrades_supported_legacy_schemas() {
         let dir = tempfile::tempdir().unwrap();
         let store = StateStore::new(dir.path().join("rooms.json"));
-        std::fs::write(store.path(), r#"{"schema_version":1,"rooms":[]}"#).unwrap();
-
-        store.mutate(|_| Ok(())).unwrap();
-
-        assert_eq!(store.load().unwrap().schema_version, 2);
+        for schema_version in [1, 2] {
+            std::fs::write(
+                store.path(),
+                format!(r#"{{"schema_version":{schema_version},"rooms":[]}}"#),
+            )
+            .unwrap();
+            store.mutate(|_| Ok(())).unwrap();
+            assert_eq!(store.load().unwrap().schema_version, 3);
+        }
     }
 
     #[test]
-    fn cache_defaults_legacy_seats_to_active() {
+    fn cache_reads_legacy_room_without_lifecycle() {
         let dir = tempfile::tempdir().unwrap();
         let store = StateStore::new(dir.path().join("rooms.json"));
         std::fs::write(
             store.path(),
-            r#"{"schema_version":1,"rooms":[{"id":"room-1","name":"Room","workspace":"/tmp/project","status":"active","host":{"agent":"codex"},"seats":[{"id":"seat-1","name":"reviewer","agent":"claude","model":null,"reasoning_effort":null,"instructions":null,"native_session_id":null}],"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}]}"#,
+            r#"{"schema_version":1,"rooms":[{"id":"room-1","name":"Room","workspace":"/tmp/project","status":"inactive","host":{"agent":"codex"},"seats":[{"id":"seat-1","name":"reviewer","agent":"claude","model":null,"reasoning_effort":null,"instructions":null,"native_session_id":null}],"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}]}"#,
         )
         .unwrap();
 
         let state = store.load().unwrap();
         assert_eq!(state.rooms[0].seats[0].status, SeatStatus::Active);
+        assert!(
+            store
+                .room_for_workspace("room-1", std::path::Path::new("/tmp/project"))
+                .is_ok()
+        );
     }
 
     #[test]

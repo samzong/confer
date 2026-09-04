@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" data-blueprint-diagram="true" viewBox="0 0 1300 900" role="img" aria-labelledby="title desc" font-family="Comic Sans MS, Chalkboard SE, Bradley Hand, Segoe Print, cursive" text-rendering="geometricPrecision">
   <title id="title">Confer architecture</title>
-  <desc id="desc">Confer is a host-moderated task room. Eight MCP tools manage room, seat, and message lifecycles. A central room router exchanges private messages and answers with logical seats. Every seat has a FIFO delivery queue and its own native agent session. Final answers pass through the in-memory delivery map back to the host. Room metadata is durable, and every native agent shares the same full-permission workspace.</desc>
+  <desc id="desc">Confer is a host-moderated task room. Six MCP tools manage room identity, seat lifecycle, and message delivery. A central room router exchanges private messages and answers with logical seats. Every seat has a FIFO delivery queue and its own native agent session. Final answers pass through the in-memory delivery map back to the host. Room metadata is durable, and every native agent shares the same full-permission workspace.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0 0 L10 5 L0 10 z" fill="#363b42"/>
@@ -31,12 +31,12 @@
   <text x="650" y="78" class="subtitle" text-anchor="middle">Private messages · explicit relays · one shared workspace</text>
 
   <rect x="30" y="130" width="260" height="600" rx="18" fill="#fffdf6" stroke="#287bb5" stroke-width="2"/>
-  <text x="50" y="162" class="group">Eight MCP tools · stdio</text>
+  <text x="50" y="162" class="group">Six MCP tools · stdio</text>
 
   <rect x="50" y="192" width="220" height="142" rx="12" class="box" fill="#e9f4fb" stroke="#287bb5"/>
-  <text x="68" y="219" class="headingSmall">Room lifecycle</text>
+  <text x="68" y="219" class="headingSmall">Room identity</text>
   <text x="68" y="245" class="mono">create_room · list_rooms</text>
-  <text x="68" y="266" class="mono">resume_room · close_room</text>
+  <text x="68" y="266" class="mono">context keeps room ID</text>
   <text x="68" y="300" class="body">create · discover · retain</text>
 
   <rect x="50" y="360" width="220" height="112" rx="12" class="box" fill="#edf7ef" stroke="#319760"/>
@@ -51,7 +51,7 @@
   <text x="68" y="581" class="body">address seats · collect answers</text>
   <text x="68" y="600" class="mono">one FIFO queue per seat</text>
 
-  <text x="50" y="660" class="headingSmall">Eight tools, one moderator</text>
+  <text x="50" y="660" class="headingSmall">Six tools, one moderator</text>
   <text x="50" y="685" class="body">The host chooses seats and decides</text>
   <text x="50" y="703" class="body">every follow-up or relay.</text>
 
@@ -105,7 +105,7 @@
   <rect x="1030" y="192" width="220" height="176" rx="12" class="box" fill="#f6edf8" stroke="#8d58c7"/>
   <text x="1048" y="219" class="headingSmall">Durable room map</text>
   <text x="1048" y="245" class="mono">~/.confer/rooms.json</text>
-  <text x="1048" y="275" class="body">room + seat status</text>
+  <text x="1048" y="275" class="body">room + seat metadata</text>
   <text x="1048" y="295" class="body">selection + native session IDs</text>
   <text x="1048" y="325" class="mono">no messages · no transcripts</text>
   <text x="1048" y="348" class="body">advisory lease files hold no state</text>

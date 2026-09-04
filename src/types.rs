@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub(crate) const ROOMS_SCHEMA_VERSION: u32 = 2;
+pub(crate) const ROOMS_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -79,19 +79,11 @@ pub(crate) enum SeatStatus {
     Retired,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum RoomStatus {
-    Active,
-    Inactive,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct RoomRecord {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) workspace: String,
-    pub(crate) status: RoomStatus,
     pub(crate) host: HostRecord,
     pub(crate) seats: Vec<SeatRecord>,
     pub(crate) created_at: String,

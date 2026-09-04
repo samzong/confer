@@ -1,0 +1,4 @@
+interface:
+  display_name: "Confer Quality Audit"
+  short_description: "Audit saved rooms against the product contract"
+  default_prompt: "Use $confer-quality-audit to analyze saved Confer room metadata and identify product design or contract problems."
