@@ -6,12 +6,23 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
 
-use crate::types::{RoomRecord, RoomsFile};
+use crate::types::{ROOMS_SCHEMA_VERSION, RoomRecord, RoomsFile};
 
 #[derive(Clone, Debug)]
 pub(crate) struct StateStore {
     path: PathBuf,
     lock_path: PathBuf,
+}
+
+#[derive(Debug)]
+pub(crate) struct SeatLease {
+    file: File,
+}
+
+impl Drop for SeatLease {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 impl StateStore {
@@ -46,6 +57,7 @@ impl StateStore {
         lock.lock_exclusive()
             .context("failed to lock Confer room cache")?;
         let mut state = self.read_unlocked()?;
+        state.schema_version = ROOMS_SCHEMA_VERSION;
         let result = change(&mut state)?;
         self.write_unlocked(&state)?;
         lock.unlock()
@@ -60,6 +72,40 @@ impl StateStore {
             .into_iter()
             .find(|room| room.id == room_id && room.workspace == workspace)
             .ok_or_else(|| anyhow::anyhow!("room '{room_id}' was not found in this workspace"))
+    }
+
+    pub(crate) fn try_acquire_seat_lease(&self, room_id: &str, seat_id: &str) -> Result<SeatLease> {
+        let path = self.seat_lease_path(room_id, seat_id)?;
+        let lock_dir = path
+            .parent()
+            .context("Confer seat lease has no parent directory")?;
+        fs::create_dir_all(lock_dir)
+            .with_context(|| format!("failed to create {}", lock_dir.display()))?;
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("failed to open {}", path.display()))?;
+        match file.try_lock_exclusive() {
+            Ok(()) => Ok(SeatLease { file }),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                bail!("seat_busy: seat '{seat_id}' has a running delivery")
+            }
+            Err(error) => Err(error)
+                .with_context(|| format!("failed to lock seat '{seat_id}' in room '{room_id}'")),
+        }
+    }
+
+    fn seat_lease_path(&self, room_id: &str, seat_id: &str) -> Result<PathBuf> {
+        let parent = self
+            .path
+            .parent()
+            .context("Confer room cache has no parent directory")?;
+        Ok(parent
+            .join("seat-locks")
+            .join(format!("{room_id}-{seat_id}.lock")))
     }
 
     fn ensure_parent(&self) -> Result<()> {
@@ -99,7 +145,7 @@ impl StateStore {
         }
         let state: RoomsFile = serde_json::from_str(&body)
             .with_context(|| format!("failed to parse {}", self.path.display()))?;
-        if state.schema_version != 1 {
+        if !matches!(state.schema_version, 1 | ROOMS_SCHEMA_VERSION) {
             bail!(
                 "unsupported Confer room cache schema {}",
                 state.schema_version
@@ -155,7 +201,7 @@ pub(crate) fn current_workspace() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::StateStore;
-    use crate::types::{HostRecord, RoomRecord, RoomStatus};
+    use crate::types::{HostRecord, RoomRecord, RoomStatus, SeatStatus};
 
     #[test]
     fn cache_round_trip_preserves_rooms() {
@@ -188,7 +234,54 @@ mod tests {
     fn cache_rejects_unknown_schema() {
         let dir = tempfile::tempdir().unwrap();
         let store = StateStore::new(dir.path().join("rooms.json"));
-        std::fs::write(store.path(), r#"{"schema_version":2,"rooms":[]}"#).unwrap();
+        std::fs::write(store.path(), r#"{"schema_version":3,"rooms":[]}"#).unwrap();
         assert!(store.load().is_err());
+    }
+
+    #[test]
+    fn cache_mutation_upgrades_legacy_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::new(dir.path().join("rooms.json"));
+        std::fs::write(store.path(), r#"{"schema_version":1,"rooms":[]}"#).unwrap();
+
+        store.mutate(|_| Ok(())).unwrap();
+
+        assert_eq!(store.load().unwrap().schema_version, 2);
+    }
+
+    #[test]
+    fn cache_defaults_legacy_seats_to_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::new(dir.path().join("rooms.json"));
+        std::fs::write(
+            store.path(),
+            r#"{"schema_version":1,"rooms":[{"id":"room-1","name":"Room","workspace":"/tmp/project","status":"active","host":{"agent":"codex"},"seats":[{"id":"seat-1","name":"reviewer","agent":"claude","model":null,"reasoning_effort":null,"instructions":null,"native_session_id":null}],"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}]}"#,
+        )
+        .unwrap();
+
+        let state = store.load().unwrap();
+        assert_eq!(state.rooms[0].seats[0].status, SeatStatus::Active);
+    }
+
+    #[test]
+    fn seat_lease_is_exclusive_across_store_instances() {
+        let dir = tempfile::tempdir().unwrap();
+        let first_store = StateStore::new(dir.path().join("rooms.json"));
+        let second_store = StateStore::new(dir.path().join("rooms.json"));
+        let first = first_store
+            .try_acquire_seat_lease("room-1", "seat-1")
+            .unwrap();
+
+        let error = second_store
+            .try_acquire_seat_lease("room-1", "seat-1")
+            .unwrap_err();
+        assert!(error.to_string().contains("seat_busy"));
+
+        drop(first);
+        assert!(
+            second_store
+                .try_acquire_seat_lease("room-1", "seat-1")
+                .is_ok()
+        );
     }
 }

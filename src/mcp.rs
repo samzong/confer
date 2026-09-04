@@ -13,19 +13,18 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, mpsc};
 
 use crate::adapters::{self, Invocation};
 use crate::state::{StateStore, current_workspace};
 use crate::types::{
-    AgentKind, HostRecord, Readiness, Replacement, RoomRecord, RoomStatus, SeatRecord,
+    AgentKind, HostRecord, Readiness, Replacement, RoomRecord, RoomStatus, SeatRecord, SeatStatus,
 };
 
 const DEFAULT_ROOM_SIZE: usize = 3;
 const MAX_ROOM_SIZE: usize = 16;
 const DEFAULT_WAIT_MS: u64 = 120_000;
 const MAX_WAIT_MS: u64 = 600_000;
-const SESSION_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub(crate) enum CapabilitiesFormat {
@@ -60,8 +59,31 @@ struct CreateRoomArgs {
     seats: Vec<SeatSpecInput>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum RoomScope {
+    #[default]
+    Current,
+    All,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct EmptyArgs {}
+struct ListRoomsArgs {
+    #[serde(default)]
+    scope: Option<RoomScope>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct AddSeatArgs {
+    room_id: String,
+    seat: SeatSpecInput,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct RetireSeatArgs {
+    room_id: String,
+    seat: String,
+}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct SendMessageArgs {
@@ -93,6 +115,7 @@ struct SeatView {
     model: Option<String>,
     reasoning_effort: Option<String>,
     native_session: bool,
+    status: SeatStatus,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -116,8 +139,21 @@ struct CreateRoomOutput {
 
 #[derive(Debug, Serialize)]
 struct ListRoomsOutput {
-    workspace: String,
+    scope: RoomScope,
+    workspace: Option<String>,
     rooms: Vec<RoomView>,
+}
+
+#[derive(Debug, Serialize)]
+struct AddSeatOutput {
+    room: RoomView,
+    readiness: Vec<Readiness>,
+    replacements: Vec<Replacement>,
+}
+
+#[derive(Debug, Serialize)]
+struct RetireSeatOutput {
+    room: RoomView,
 }
 
 #[derive(Debug, Serialize)]
@@ -130,6 +166,7 @@ struct ResumeRoomOutput {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum DeliveryStatus {
+    Queued,
     Running,
     Completed,
     Failed,
@@ -167,7 +204,6 @@ struct SendReceipt {
     seat_name: String,
     agent: AgentKind,
     accepted: bool,
-    session_pending: bool,
     error: Option<String>,
 }
 
@@ -202,10 +238,19 @@ struct CapabilitiesReport {
 }
 
 #[derive(Clone)]
+struct QueuedDelivery {
+    delivery_id: String,
+    room_id: String,
+    seat_id: String,
+    message: String,
+    workspace: PathBuf,
+}
+
+#[derive(Clone)]
 struct ConferMcp {
     store: StateStore,
     deliveries: Arc<Mutex<HashMap<String, DeliveryState>>>,
-    session_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    workers: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<QueuedDelivery>>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -238,13 +283,13 @@ impl ConferMcp {
         Ok(Self {
             store: StateStore::discover()?,
             deliveries: Arc::new(Mutex::new(HashMap::new())),
-            session_locks: Arc::new(Mutex::new(HashMap::new())),
+            workers: Arc::new(Mutex::new(HashMap::new())),
             tool_router: Self::tool_router(),
         })
     }
 
     #[tool(
-        description = "Create a temporary multi-agent room for the current Git worktree. The current host counts toward target_size, which defaults to three. This only checks local readiness and creates logical seats; it never calls a model. Explicit unavailable agents may be replaced, and every replacement is reported.",
+        description = "Create a multi-agent task room for the current Git worktree. The current host counts toward target_size, which defaults to three. This only checks local readiness and creates logical seats; it never calls a model. Explicit unavailable agents may be replaced, and every replacement is reported.",
         annotations(
             title = "Create room",
             read_only_hint = false,
@@ -260,7 +305,39 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "List active and inactive Confer rooms for the current Git worktree. Different worktrees are isolated. Returns room and participant metadata only, never messages or agent outputs.",
+        description = "Add one private seat to an active room in the current Git worktree. The seat starts a new native session on its first message. Explicit unavailable agents may be replaced, and every replacement is reported.",
+        annotations(
+            title = "Add seat",
+            read_only_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn add_seat(
+        &self,
+        Parameters(args): Parameters<AddSeatArgs>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        Ok(json_result(self.add_seat_inner(args)))
+    }
+
+    #[tool(
+        description = "Retire one seat in an active room in the current Git worktree. A retired seat keeps its metadata and native session mapping but can no longer receive messages. A known running delivery must finish first.",
+        annotations(
+            title = "Retire seat",
+            read_only_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn retire_seat(
+        &self,
+        Parameters(args): Parameters<RetireSeatArgs>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        Ok(json_result(self.retire_seat_inner(args).await))
+    }
+
+    #[tool(
+        description = "List active and inactive Confer rooms. scope defaults to current for the current Git worktree; use all to inspect rooms across every recorded workspace. Returns room and participant metadata only, never messages or agent outputs.",
         annotations(
             title = "List rooms",
             read_only_hint = true,
@@ -270,13 +347,15 @@ impl ConferMcp {
     )]
     async fn list_rooms(
         &self,
-        Parameters(_args): Parameters<EmptyArgs>,
+        Parameters(args): Parameters<ListRoomsArgs>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        Ok(json_result(self.list_rooms_inner()))
+        Ok(json_result(
+            self.list_rooms_inner(args.scope.unwrap_or_default()),
+        ))
     }
 
     #[tool(
-        description = "Send one message directly to one or more external seats in a room. Use recipient '*' to broadcast. Every recipient gets a separate delivery ID. session_pending means dispatch succeeded but first-session addressing exceeded the readiness window; use wait_output for its live delivery. Confer does not wait for earlier messages, queue, retry, or expose one seat's messages to another seat.",
+        description = "Queue one message for one or more external seats in a room. Use recipient '*' to broadcast. Idle seats start promptly and busy seats run messages FIFO. Every recipient gets a delivery ID for wait_output.",
         annotations(
             title = "Send message",
             read_only_hint = false,
@@ -292,7 +371,7 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "Wait for final answers from live deliveries. Pass delivery IDs to wait for specific sends, or omit them to wait for every delivery from this room still known to the current MCP process. A timeout returns completed answers and running statuses without cancellation. Thinking, token deltas, and tool events are never returned.",
+        description = "Wait for final answers from live deliveries. Pass delivery IDs to wait for specific sends, or omit them to wait for every delivery from this room still known to the current MCP process. A timeout returns completed answers plus queued and running statuses without cancellation. Thinking, token deltas, and tool events are never returned.",
         annotations(
             title = "Wait for output",
             read_only_hint = true,
@@ -377,20 +456,120 @@ impl ConferMcp {
         })
     }
 
-    fn list_rooms_inner(&self) -> Result<ListRoomsOutput> {
+    fn add_seat_inner(&self, args: AddSeatArgs) -> Result<AddSeatOutput> {
         let workspace = current_workspace()?;
         let workspace_text = workspace.to_string_lossy().into_owned();
-        let mut rooms = self
-            .store
-            .load()?
-            .rooms
-            .into_iter()
-            .filter(|room| room.workspace == workspace_text)
-            .map(|room| room_view(&room))
-            .collect::<Vec<_>>();
-        rooms.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        let readiness = adapters::readiness();
+        let room = self.store.room_for_workspace(&args.room_id, &workspace)?;
+        if room.status != RoomStatus::Active {
+            bail!(
+                "room '{}' is inactive; resume it before adding a seat",
+                room.id
+            );
+        }
+        let names = room
+            .seats
+            .iter()
+            .map(|seat| seat.name.clone())
+            .collect::<HashSet<_>>();
+        let (mut seats, replacements) = select_seats_with_names(
+            vec![args.seat],
+            1,
+            room.host.agent.as_deref(),
+            &readiness,
+            names,
+        )?;
+        let seat = seats.pop().context("seat selection returned no seat")?;
+        let room = self.store.mutate(|state| {
+            let room = state
+                .rooms
+                .iter_mut()
+                .find(|room| room.id == args.room_id && room.workspace == workspace_text)
+                .with_context(|| {
+                    format!("room '{}' was not found in this workspace", args.room_id)
+                })?;
+            if room.status != RoomStatus::Active {
+                bail!(
+                    "room '{}' is inactive; resume it before adding a seat",
+                    room.id
+                );
+            }
+            if room.seats.iter().any(|existing| existing.name == seat.name) {
+                bail!("duplicate seat name '{}'", seat.name);
+            }
+            room.seats.push(seat);
+            room.updated_at = timestamp();
+            Ok(room.clone())
+        })?;
+        Ok(AddSeatOutput {
+            room: room_view(&room),
+            readiness,
+            replacements,
+        })
+    }
+
+    async fn retire_seat_inner(&self, args: RetireSeatArgs) -> Result<RetireSeatOutput> {
+        let workspace = current_workspace()?;
+        let workspace_text = workspace.to_string_lossy().into_owned();
+        let room = self.store.room_for_workspace(&args.room_id, &workspace)?;
+        if room.status != RoomStatus::Active {
+            bail!(
+                "room '{}' is inactive; resume it before retiring a seat",
+                room.id
+            );
+        }
+        let seat = room
+            .seats
+            .iter()
+            .find(|seat| seat.id == args.seat || seat.name == args.seat)
+            .with_context(|| format!("unknown seat '{}' in room '{}'", args.seat, room.id))?;
+        if seat.status == SeatStatus::Retired {
+            bail!("seat '{}' is already retired", seat.name);
+        }
+        let _session_guard = self.store.try_acquire_seat_lease(&room.id, &seat.id)?;
+        let seat_id = seat.id.clone();
+        let room = self.store.mutate(|state| {
+            let room = state
+                .rooms
+                .iter_mut()
+                .find(|room| room.id == args.room_id && room.workspace == workspace_text)
+                .with_context(|| {
+                    format!("room '{}' was not found in this workspace", args.room_id)
+                })?;
+            if room.status != RoomStatus::Active {
+                bail!(
+                    "room '{}' is inactive; resume it before retiring a seat",
+                    room.id
+                );
+            }
+            let seat = room
+                .seats
+                .iter_mut()
+                .find(|seat| seat.id == seat_id)
+                .with_context(|| format!("seat '{seat_id}' disappeared while retiring"))?;
+            if seat.status == SeatStatus::Retired {
+                bail!("seat '{}' is already retired", seat.name);
+            }
+            seat.status = SeatStatus::Retired;
+            room.updated_at = timestamp();
+            Ok(room.clone())
+        })?;
+        self.workers
+            .lock()
+            .await
+            .remove(&seat_key(&room.id, &seat_id));
+        Ok(RetireSeatOutput {
+            room: room_view(&room),
+        })
+    }
+
+    fn list_rooms_inner(&self, scope: RoomScope) -> Result<ListRoomsOutput> {
+        let workspace = current_workspace()?;
+        let workspace_text = workspace.to_string_lossy().into_owned();
+        let rooms = rooms_for_scope(self.store.load()?.rooms, scope, &workspace_text);
         Ok(ListRoomsOutput {
-            workspace: workspace_text,
+            scope,
+            workspace: matches!(scope, RoomScope::Current).then_some(workspace_text),
             rooms,
         })
     }
@@ -410,213 +589,91 @@ impl ConferMcp {
         let seats = resolve_recipients(&room, &args.recipients)?;
         let mut receipts = Vec::new();
         for seat in seats {
-            let readiness = adapters::check_readiness(seat.agent);
-            if !readiness.locally_ready {
-                let error = readiness
-                    .reason
-                    .unwrap_or_else(|| "agent is not locally ready".into());
-                receipts.push(self.failed_delivery(&room, seat, error).await);
-                continue;
-            }
-            let session_lock = self.session_lock(&room.id, &seat.id).await;
-            let mut session_guard = Some(session_lock.lock_owned().await);
-            let current_room = match self.store.room_for_workspace(&room.id, &workspace) {
-                Ok(current_room) => current_room,
-                Err(error) => {
-                    let error = format!(
-                        "failed to refresh seat '{}' in room '{}': {error}",
-                        seat.name, room.id
-                    );
-                    receipts.push(self.failed_delivery(&room, seat, error).await);
-                    continue;
-                }
-            };
-            let native_session_id = current_room
-                .seats
-                .iter()
-                .find(|current| current.id == seat.id)
-                .with_context(|| {
-                    format!(
-                        "seat '{}' disappeared while preparing a delivery",
-                        seat.name
-                    )
-                })?
-                .native_session_id
-                .clone();
-            let executable = PathBuf::from(readiness.executable.context("missing executable")?);
-            let first_message = native_session_id.is_none();
-            let reserved = if first_message {
-                match adapters::reserve_session(seat.agent, &executable).await {
-                    Ok(session) => session,
-                    Err(error) => {
-                        let error = format!(
-                            "failed to reserve a native {} session for seat '{}' in room '{}': {error}",
-                            seat.agent.id(),
-                            seat.name,
-                            room.id
-                        );
-                        receipts.push(self.failed_delivery(&room, seat, error).await);
-                        continue;
-                    }
-                }
-            } else {
-                native_session_id
-            };
-            if first_message
-                && reserved.is_some()
-                && seat.agent == AgentKind::Cursor
-                && let Err(error) =
-                    persist_native_session(&self.store, &room.id, &seat.id, reserved.as_deref())
-            {
-                let error = format!(
-                    "failed to persist the native {} session for seat '{}' in room '{}': {error}",
-                    seat.agent.id(),
-                    seat.name,
-                    room.id
-                );
-                receipts.push(self.failed_delivery(&room, seat, error).await);
-                continue;
-            }
-            let delivery_id = uuid::Uuid::new_v4().to_string();
-            let delivery = DeliveryState {
-                delivery_id: delivery_id.clone(),
-                room_id: room.id.clone(),
-                seat_id: seat.id.clone(),
-                seat_name: seat.name.clone(),
-                agent: seat.agent,
-                status: DeliveryStatus::Running,
-                final_answer: None,
-                error: None,
-            };
-            self.deliveries
-                .lock()
-                .await
-                .insert(delivery_id.clone(), delivery);
-            let invocation = Invocation {
-                agent: seat.agent,
-                executable,
-                workspace: workspace.clone(),
-                native_session_id: reserved.clone(),
-                model: seat.model.clone(),
-                reasoning_effort: seat.reasoning_effort.clone(),
-                instructions: seat.instructions.clone(),
-                message: args.message.clone(),
-                first_message,
-            };
-            let needs_handshake = first_message
-                && matches!(
-                    seat.agent,
-                    AgentKind::Claude | AgentKind::Codex | AgentKind::Grok | AgentKind::Agy
-                );
-            let (sender, receiver) = if needs_handshake {
-                let (sender, receiver) = oneshot::channel();
-                (Some(sender), Some(receiver))
-            } else {
-                (None, None)
-            };
-            let deliveries = self.deliveries.clone();
-            let task_delivery_id = delivery_id.clone();
-            let expected_session = reserved.clone();
-            tokio::spawn(async move {
-                let output = adapters::run(invocation, sender).await;
-                let mismatch = expected_session
-                    .as_ref()
-                    .zip(output.observed_session_id.as_ref())
-                    .and_then(|(expected, actual)| {
-                        (expected != actual).then(|| {
-                            format!("native session changed from '{expected}' to '{actual}'")
-                        })
-                    });
-                let mut map = deliveries.lock().await;
-                if let Some(delivery) = map.get_mut(&task_delivery_id) {
-                    if delivery.status != DeliveryStatus::Running {
-                        return;
-                    }
-                    if let Some(error) = mismatch.or(output.error) {
-                        delivery.status = DeliveryStatus::Failed;
-                        delivery.error = Some(error);
-                    } else {
-                        delivery.status = DeliveryStatus::Completed;
-                        delivery.final_answer = output.answer;
-                    }
-                }
-            });
-            let mut receipt = SendReceipt {
-                delivery_id,
-                seat_id: seat.id.clone(),
-                seat_name: seat.name.clone(),
-                agent: seat.agent,
-                accepted: true,
-                session_pending: false,
-                error: None,
-            };
-            if let Some(mut receiver) = receiver {
-                let timeout = tokio::time::sleep(SESSION_READY_TIMEOUT);
-                tokio::pin!(timeout);
-                tokio::select! {
-                    outcome = &mut receiver => match outcome {
-                    Ok(Ok(id)) => {
-                        if let Err(error) =
-                            persist_native_session(&self.store, &room.id, &seat.id, Some(&id))
-                        {
-                            let error = format!(
-                                "failed to persist the native {} session for seat '{}' in room '{}': {error}",
-                                seat.agent.id(),
-                                seat.name,
-                                room.id
-                            );
-                            receipt.accepted = false;
-                            receipt.error = Some(error.clone());
-                            self.mark_delivery_failed(&receipt.delivery_id, error).await;
-                        }
-                    }
-                    Ok(Err(error)) => {
-                        receipt.accepted = false;
-                        receipt.error = Some(error);
-                    }
-                    Err(_) => {
-                        receipt.accepted = false;
-                        receipt.error =
-                            Some("agent ended before reporting a native session ID".into());
-                    }
-                    },
-                    _ = &mut timeout => {
-                        receipt.session_pending = true;
-                        let store = self.store.clone();
-                        let room_id = room.id.clone();
-                        let seat_id = seat.id.clone();
-                        let delivery_id = receipt.delivery_id.clone();
-                        let deliveries = self.deliveries.clone();
-                        let guard = session_guard.take().expect("session guard");
-                        tokio::spawn(async move {
-                            let _guard = guard;
-                            if let Ok(Ok(id)) = receiver.await
-                                && let Err(error) = persist_native_session(
-                                    &store,
-                                    &room_id,
-                                    &seat_id,
-                                    Some(&id),
-                                )
-                                && let Some(delivery) =
-                                    deliveries.lock().await.get_mut(&delivery_id)
-                            {
-                                delivery.status = DeliveryStatus::Failed;
-                                delivery.final_answer = None;
-                                delivery.error = Some(format!(
-                                    "native session became ready but could not be persisted: {error}"
-                                ));
-                            }
-                        });
-                    }
-                }
-            }
-            drop(session_guard);
-            receipts.push(receipt);
+            receipts.push(
+                self.enqueue_delivery(&room, seat, &args.message, workspace.clone())
+                    .await,
+            );
         }
         Ok(SendMessageOutput {
             room_id: room.id,
             deliveries: receipts,
         })
+    }
+
+    async fn enqueue_delivery(
+        &self,
+        room: &RoomRecord,
+        seat: &SeatRecord,
+        message: &str,
+        workspace: PathBuf,
+    ) -> SendReceipt {
+        let readiness = adapters::check_readiness(seat.agent);
+        if !readiness.locally_ready {
+            let error = readiness
+                .reason
+                .unwrap_or_else(|| "agent is not locally ready".into());
+            return self.failed_delivery(room, seat, error).await;
+        }
+        let delivery_id = uuid::Uuid::new_v4().to_string();
+        self.deliveries.lock().await.insert(
+            delivery_id.clone(),
+            DeliveryState {
+                delivery_id: delivery_id.clone(),
+                room_id: room.id.clone(),
+                seat_id: seat.id.clone(),
+                seat_name: seat.name.clone(),
+                agent: seat.agent,
+                status: DeliveryStatus::Queued,
+                final_answer: None,
+                error: None,
+            },
+        );
+        let queued = QueuedDelivery {
+            delivery_id: delivery_id.clone(),
+            room_id: room.id.clone(),
+            seat_id: seat.id.clone(),
+            message: message.to_string(),
+            workspace,
+        };
+        let key = seat_key(&room.id, &seat.id);
+        let sender = self.worker_sender(key).await;
+        if sender.send(queued).is_err() {
+            let error = format!("queue worker for seat '{}' stopped", seat.name);
+            self.mark_delivery_failed(&delivery_id, error.clone()).await;
+            return SendReceipt {
+                delivery_id,
+                seat_id: seat.id.clone(),
+                seat_name: seat.name.clone(),
+                agent: seat.agent,
+                accepted: false,
+                error: Some(error),
+            };
+        }
+        SendReceipt {
+            delivery_id,
+            seat_id: seat.id.clone(),
+            seat_name: seat.name.clone(),
+            agent: seat.agent,
+            accepted: true,
+            error: None,
+        }
+    }
+
+    async fn worker_sender(&self, key: String) -> mpsc::UnboundedSender<QueuedDelivery> {
+        let mut workers = self.workers.lock().await;
+        if let Some(sender) = workers.get(&key)
+            && !sender.is_closed()
+        {
+            return sender.clone();
+        }
+        let (sender, receiver) = mpsc::unbounded_channel();
+        tokio::spawn(run_seat_worker(
+            receiver,
+            self.store.clone(),
+            self.deliveries.clone(),
+        ));
+        workers.insert(key, sender.clone());
+        sender
     }
 
     async fn failed_delivery(
@@ -645,7 +702,6 @@ impl ConferMcp {
             seat_name: seat.name.clone(),
             agent: seat.agent,
             accepted: false,
-            session_pending: false,
             error: Some(error),
         }
     }
@@ -656,15 +712,6 @@ impl ConferMcp {
             delivery.final_answer = None;
             delivery.error = Some(error);
         }
-    }
-
-    async fn session_lock(&self, room_id: &str, seat_id: &str) -> Arc<Mutex<()>> {
-        let key = format!("{room_id}:{seat_id}");
-        let mut locks = self.session_locks.lock().await;
-        locks
-            .entry(key)
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
     }
 
     async fn wait_output_inner(&self, args: WaitOutputArgs) -> Result<WaitOutput> {
@@ -726,9 +773,16 @@ impl ConferMcp {
     }
 
     fn resume_room_inner(&self, room_id: &str) -> Result<ResumeRoomOutput> {
+        self.resume_room_with_readiness(room_id, adapters::readiness())
+    }
+
+    fn resume_room_with_readiness(
+        &self,
+        room_id: &str,
+        readiness: Vec<Readiness>,
+    ) -> Result<ResumeRoomOutput> {
         let workspace = current_workspace()?;
         let workspace_text = workspace.to_string_lossy().into_owned();
-        let readiness = adapters::readiness();
         let ready_agents = readiness
             .iter()
             .filter(|item| item.locally_ready)
@@ -737,6 +791,25 @@ impl ConferMcp {
         if ready_agents.is_empty() {
             bail!("no locally ready supported agents were found");
         }
+        let existing = self.store.room_for_workspace(room_id, &workspace)?;
+        let mut replaceable = HashSet::new();
+        let mut seat_leases = Vec::new();
+        for seat in &existing.seats {
+            let ready = readiness
+                .iter()
+                .any(|item| item.agent == seat.agent && item.locally_ready);
+            if seat.status == SeatStatus::Retired || ready || seat.native_session_id.is_some() {
+                continue;
+            }
+            match self.store.try_acquire_seat_lease(room_id, &seat.id) {
+                Ok(lease) => {
+                    replaceable.insert(seat.id.clone());
+                    seat_leases.push(lease);
+                }
+                Err(error) if error.to_string().starts_with("seat_busy:") => {}
+                Err(error) => return Err(error),
+            }
+        }
         let mut replacements = Vec::new();
         let room = self.store.mutate(|state| {
             let room = state
@@ -744,7 +817,8 @@ impl ConferMcp {
                 .iter_mut()
                 .find(|room| room.id == room_id && room.workspace == workspace_text)
                 .with_context(|| format!("room '{room_id}' was not found in this workspace"))?;
-            replacements = replace_unstarted_unready_seats(room, &readiness, &ready_agents);
+            replacements =
+                replace_unstarted_unready_seats(room, &readiness, &ready_agents, &replaceable);
             room.status = RoomStatus::Active;
             if let Some(agent) = detect_host_agent(None) {
                 room.host.agent = Some(agent);
@@ -752,6 +826,7 @@ impl ConferMcp {
             room.updated_at = timestamp();
             Ok(room.clone())
         })?;
+        drop(seat_leases);
         Ok(ResumeRoomOutput {
             room: room_view(&room),
             readiness,
@@ -776,28 +851,192 @@ impl ConferMcp {
             .lock()
             .await
             .retain(|_, delivery| delivery.room_id != room.id || !delivery.terminal());
-        let lock_prefix = format!("{}:", room.id);
-        self.session_locks
-            .lock()
-            .await
-            .retain(|key, lock| !key.starts_with(&lock_prefix) || Arc::strong_count(lock) > 1);
         Ok(CloseRoomOutput {
             room: room_view(&room),
         })
     }
 }
 
+async fn run_seat_worker(
+    mut receiver: mpsc::UnboundedReceiver<QueuedDelivery>,
+    store: StateStore,
+    deliveries: Arc<Mutex<HashMap<String, DeliveryState>>>,
+) {
+    while let Some(queued) = receiver.recv().await {
+        let session_guard = loop {
+            match store.try_acquire_seat_lease(&queued.room_id, &queued.seat_id) {
+                Ok(guard) => break Some(guard),
+                Err(error) if error.to_string().starts_with("seat_busy:") => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(error) => {
+                    set_delivery_failed(&deliveries, &queued.delivery_id, error.to_string()).await;
+                    break None;
+                }
+            }
+        };
+        let Some(_session_guard) = session_guard else {
+            continue;
+        };
+        process_queued_delivery(&queued, &store, &deliveries).await;
+    }
+}
+
+async fn process_queued_delivery(
+    queued: &QueuedDelivery,
+    store: &StateStore,
+    deliveries: &Arc<Mutex<HashMap<String, DeliveryState>>>,
+) {
+    let room = match store.room_for_workspace(&queued.room_id, &queued.workspace) {
+        Ok(room) if room.status == RoomStatus::Active => room,
+        Ok(_) => {
+            set_delivery_failed(
+                deliveries,
+                &queued.delivery_id,
+                format!("room '{}' became inactive before delivery", queued.room_id),
+            )
+            .await;
+            return;
+        }
+        Err(error) => {
+            set_delivery_failed(deliveries, &queued.delivery_id, error.to_string()).await;
+            return;
+        }
+    };
+    let Some(seat) = room
+        .seats
+        .iter()
+        .find(|seat| seat.id == queued.seat_id)
+        .cloned()
+    else {
+        set_delivery_failed(
+            deliveries,
+            &queued.delivery_id,
+            format!("seat '{}' disappeared before delivery", queued.seat_id),
+        )
+        .await;
+        return;
+    };
+    if seat.status == SeatStatus::Retired {
+        set_delivery_failed(
+            deliveries,
+            &queued.delivery_id,
+            format!("seat '{}' is retired", seat.name),
+        )
+        .await;
+        return;
+    }
+    let readiness = adapters::check_readiness(seat.agent);
+    if !readiness.locally_ready {
+        set_delivery_failed(
+            deliveries,
+            &queued.delivery_id,
+            readiness
+                .reason
+                .unwrap_or_else(|| "agent is not locally ready".into()),
+        )
+        .await;
+        return;
+    }
+    if let Some(delivery) = deliveries.lock().await.get_mut(&queued.delivery_id) {
+        delivery.status = DeliveryStatus::Running;
+    }
+    let first_message = seat.native_session_id.is_none();
+    let executable = match readiness.executable {
+        Some(executable) => PathBuf::from(executable),
+        None => {
+            set_delivery_failed(
+                deliveries,
+                &queued.delivery_id,
+                "agent readiness returned no executable".into(),
+            )
+            .await;
+            return;
+        }
+    };
+    let reserved = if first_message {
+        match adapters::reserve_session(seat.agent, &executable).await {
+            Ok(session) => session,
+            Err(error) => {
+                set_delivery_failed(deliveries, &queued.delivery_id, error.to_string()).await;
+                return;
+            }
+        }
+    } else {
+        seat.native_session_id.clone()
+    };
+    if first_message
+        && seat.agent == AgentKind::Cursor
+        && let Err(error) =
+            persist_native_session(store, &queued.room_id, &queued.seat_id, reserved.as_deref())
+    {
+        set_delivery_failed(deliveries, &queued.delivery_id, error.to_string()).await;
+        return;
+    }
+    let invocation = Invocation {
+        agent: seat.agent,
+        executable,
+        workspace: queued.workspace.clone(),
+        native_session_id: reserved.clone(),
+        model: seat.model.clone(),
+        reasoning_effort: seat.reasoning_effort.clone(),
+        instructions: seat.instructions.clone(),
+        message: queued.message.clone(),
+        first_message,
+    };
+    let output = adapters::run(invocation, None).await;
+    let expected_session = reserved;
+    let (mismatch, observed_session) = native_session_outcome(
+        expected_session.as_deref(),
+        output.observed_session_id.as_deref(),
+    );
+    let persistence_error =
+        persist_native_session(store, &queued.room_id, &queued.seat_id, observed_session)
+            .err()
+            .map(|error| format!("native session could not be persisted: {error}"));
+    let mut map = deliveries.lock().await;
+    if let Some(delivery) = map.get_mut(&queued.delivery_id) {
+        finish_delivery(
+            delivery,
+            mismatch,
+            persistence_error,
+            output.error,
+            output.answer,
+        );
+    }
+}
+
+async fn set_delivery_failed(
+    deliveries: &Arc<Mutex<HashMap<String, DeliveryState>>>,
+    delivery_id: &str,
+    error: String,
+) {
+    if let Some(delivery) = deliveries.lock().await.get_mut(delivery_id) {
+        delivery.status = DeliveryStatus::Failed;
+        delivery.final_answer = None;
+        delivery.error = Some(error);
+    }
+}
+
+fn seat_key(room_id: &str, seat_id: &str) -> String {
+    format!("{room_id}:{seat_id}")
+}
+
 fn replace_unstarted_unready_seats(
     room: &mut RoomRecord,
     readiness: &[Readiness],
     ready_agents: &[AgentKind],
+    replaceable: &HashSet<String>,
 ) -> Vec<Replacement> {
     let mut replacements = Vec::new();
     for seat in &mut room.seats {
+        if seat.status == SeatStatus::Retired {
+            continue;
+        }
         let ready = readiness
             .iter()
             .any(|item| item.agent == seat.agent && item.locally_ready);
-        if ready || seat.native_session_id.is_some() {
+        if ready || seat.native_session_id.is_some() || !replaceable.contains(&seat.id) {
             continue;
         }
         let replacement = ready_agents[0];
@@ -826,6 +1065,16 @@ fn select_seats(
     count: usize,
     host_agent: Option<&str>,
     readiness: &[Readiness],
+) -> Result<(Vec<SeatRecord>, Vec<Replacement>)> {
+    select_seats_with_names(requested, count, host_agent, readiness, HashSet::new())
+}
+
+fn select_seats_with_names(
+    requested: Vec<SeatSpecInput>,
+    count: usize,
+    host_agent: Option<&str>,
+    readiness: &[Readiness],
+    mut names: HashSet<String>,
 ) -> Result<(Vec<SeatRecord>, Vec<Replacement>)> {
     let ready = readiness
         .iter()
@@ -859,7 +1108,6 @@ fn select_seats(
     }
     let mut seats = Vec::with_capacity(specs.len());
     let mut replacements = Vec::new();
-    let mut names = HashSet::new();
     for (index, spec) in specs.into_iter().enumerate() {
         let requested_agent = spec
             .agent
@@ -870,19 +1118,7 @@ fn select_seats(
             .transpose()?;
         let selected = match requested_agent {
             Some(agent) if ready.contains(&agent) => agent,
-            Some(agent) => {
-                let replacement = preferred[index % preferred.len()];
-                replacements.push(Replacement {
-                    seat_name: spec
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| format!("seat-{}", index + 1)),
-                    requested_agent: agent.id().into(),
-                    replacement_agent: replacement.id().into(),
-                    reason: "requested agent is not locally ready".into(),
-                });
-                replacement
-            }
+            Some(_) => preferred[index % preferred.len()],
             None => preferred[index % preferred.len()],
         };
         let mut name = spec
@@ -905,6 +1141,16 @@ fn select_seats(
         }
         names.insert(name.clone());
         let replaced = requested_agent.is_some_and(|agent| agent != selected);
+        if let Some(requested_agent) = requested_agent
+            && replaced
+        {
+            replacements.push(Replacement {
+                seat_name: name.clone(),
+                requested_agent: requested_agent.id().into(),
+                replacement_agent: selected.id().into(),
+                reason: "requested agent is not locally ready".into(),
+            });
+        }
         seats.push(SeatRecord {
             id: uuid::Uuid::new_v4().to_string(),
             name,
@@ -913,6 +1159,7 @@ fn select_seats(
             reasoning_effort: (!replaced).then_some(spec.reasoning_effort).flatten(),
             instructions: spec.instructions,
             native_session_id: None,
+            status: SeatStatus::Active,
         });
     }
     Ok((seats, replacements))
@@ -929,7 +1176,15 @@ fn resolve_recipients<'a>(
         if recipients.len() != 1 {
             bail!("recipient '*' must be used alone");
         }
-        return Ok(room.seats.iter().collect());
+        let seats = room
+            .seats
+            .iter()
+            .filter(|seat| seat.status == SeatStatus::Active)
+            .collect::<Vec<_>>();
+        if seats.is_empty() {
+            bail!("room '{}' has no active seats", room.id);
+        }
+        return Ok(seats);
     }
     let mut seen = HashSet::new();
     let mut seats = Vec::new();
@@ -939,6 +1194,9 @@ fn resolve_recipients<'a>(
             .iter()
             .find(|seat| seat.id == *recipient || seat.name == *recipient)
             .with_context(|| format!("unknown seat '{recipient}' in room '{}'", room.id))?;
+        if seat.status == SeatStatus::Retired {
+            bail!("seat '{}' is retired", seat.name);
+        }
         if seen.insert(&seat.id) {
             seats.push(seat);
         }
@@ -978,6 +1236,39 @@ fn persist_native_session(
         room.updated_at = timestamp();
         Ok(())
     })
+}
+
+fn native_session_outcome<'a>(
+    expected: Option<&str>,
+    observed: Option<&'a str>,
+) -> (Option<String>, Option<&'a str>) {
+    let mismatch = expected.zip(observed).and_then(|(expected, observed)| {
+        (expected != observed)
+            .then(|| format!("native session changed from '{expected}' to '{observed}'"))
+    });
+    let persistable = mismatch.is_none().then_some(observed).flatten();
+    (mismatch, persistable)
+}
+
+fn finish_delivery(
+    delivery: &mut DeliveryState,
+    mismatch: Option<String>,
+    persistence_error: Option<String>,
+    output_error: Option<String>,
+    answer: Option<String>,
+) {
+    if output_error.is_none() {
+        delivery.final_answer = answer;
+    }
+    if delivery.status != DeliveryStatus::Running {
+        return;
+    }
+    if let Some(error) = mismatch.or(persistence_error).or(output_error) {
+        delivery.status = DeliveryStatus::Failed;
+        delivery.error = Some(error);
+    } else {
+        delivery.status = DeliveryStatus::Completed;
+    }
 }
 
 fn detect_host_agent(explicit: Option<&str>) -> Option<String> {
@@ -1027,11 +1318,22 @@ fn room_view(room: &RoomRecord) -> RoomView {
                 model: seat.model.clone(),
                 reasoning_effort: seat.reasoning_effort.clone(),
                 native_session: seat.native_session_id.is_some(),
+                status: seat.status,
             })
             .collect(),
         created_at: room.created_at.clone(),
         updated_at: room.updated_at.clone(),
     }
+}
+
+fn rooms_for_scope(rooms: Vec<RoomRecord>, scope: RoomScope, workspace: &str) -> Vec<RoomView> {
+    let mut rooms = rooms
+        .into_iter()
+        .filter(|room| matches!(scope, RoomScope::All) || room.workspace == workspace)
+        .map(|room| room_view(&room))
+        .collect::<Vec<_>>();
+    rooms.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    rooms
 }
 
 fn timestamp() -> String {
@@ -1055,7 +1357,7 @@ fn server_info() -> ServerInfo {
     ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
         .with_server_info(Implementation::new("confer", env!("CARGO_PKG_VERSION")))
         .with_instructions(
-            "Create a room when the user asks to consult or coordinate other coding agents. The current host moderates every relay. Seats are private by default: do not reveal one seat's answer to another unless the user requests critique or collaboration. Use list_rooms and resume_room to continue a room in this Git worktree. Close completed rooms; they remain resumable.",
+            "Create a room when the user asks to consult or coordinate other coding agents. The current host moderates every relay. Seats are private by default: do not reveal one seat's answer to another unless the user requests critique or collaboration. Messages use per-seat FIFO queues. Use list_rooms and resume_room to continue a room in this Git worktree. Close completed rooms; they remain resumable.",
         )
 }
 
@@ -1088,9 +1390,18 @@ fn render_capabilities(report: &CapabilitiesReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        SeatSpecInput, deliveries_completed, replace_unstarted_unready_seats, select_seats,
+        ConferMcp, DeliveryState, DeliveryStatus, ListRoomsArgs, RetireSeatArgs, RoomScope,
+        SeatSpecInput, capabilities, deliveries_completed, finish_delivery, native_session_outcome,
+        replace_unstarted_unready_seats, resolve_recipients, rooms_for_scope, seat_key,
+        select_seats, select_seats_with_names,
     };
-    use crate::types::{AgentKind, HostRecord, Readiness, RoomRecord, RoomStatus, SeatRecord};
+    use crate::state::{StateStore, current_workspace};
+    use crate::types::{
+        AgentKind, HostRecord, Readiness, RoomRecord, RoomStatus, SeatRecord, SeatStatus,
+    };
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
 
     fn ready(agent: AgentKind) -> Readiness {
         Readiness {
@@ -1098,6 +1409,30 @@ mod tests {
             locally_ready: true,
             executable: Some(agent.id().into()),
             reason: None,
+        }
+    }
+
+    fn room(id: &str, workspace: &str, status: RoomStatus) -> RoomRecord {
+        RoomRecord {
+            id: id.into(),
+            name: id.into(),
+            workspace: workspace.into(),
+            status,
+            host: HostRecord {
+                agent: Some("codex".into()),
+            },
+            seats: Vec::new(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    fn service(store: StateStore) -> ConferMcp {
+        ConferMcp {
+            store,
+            deliveries: Arc::new(Mutex::new(HashMap::new())),
+            workers: Arc::new(Mutex::new(HashMap::new())),
+            tool_router: ConferMcp::tool_router(),
         }
     }
 
@@ -1120,6 +1455,48 @@ mod tests {
     }
 
     #[test]
+    fn queued_delivery_is_not_terminal() {
+        let delivery = DeliveryState {
+            delivery_id: "delivery-1".into(),
+            room_id: "room-1".into(),
+            seat_id: "seat-1".into(),
+            seat_name: "reviewer".into(),
+            agent: AgentKind::Codex,
+            status: DeliveryStatus::Queued,
+            final_answer: None,
+            error: None,
+        };
+
+        assert!(!delivery.terminal());
+        assert!(!deliveries_completed(&[delivery]));
+    }
+
+    #[test]
+    fn capabilities_expose_the_eight_room_tools() {
+        let mut names = capabilities()
+            .unwrap()
+            .tools
+            .into_iter()
+            .map(|tool| tool.name.into_owned())
+            .collect::<Vec<_>>();
+        names.sort();
+
+        assert_eq!(
+            names,
+            [
+                "add_seat",
+                "close_room",
+                "create_room",
+                "list_rooms",
+                "resume_room",
+                "retire_seat",
+                "send_message",
+                "wait_output",
+            ]
+        );
+    }
+
+    #[test]
     fn unavailable_requested_agent_is_reported_and_replaced() {
         let request = SeatSpecInput {
             agent: Some("cursor".into()),
@@ -1134,6 +1511,244 @@ mod tests {
         assert!(seats[0].model.is_none());
         assert_eq!(replacements.len(), 1);
         assert_eq!(replacements[0].seat_name, "reviewer");
+    }
+
+    #[test]
+    fn added_seat_uses_a_unique_room_address() {
+        let names = ["claude".to_string()].into_iter().collect();
+        let request = SeatSpecInput {
+            agent: Some("claude".into()),
+            model: None,
+            reasoning_effort: None,
+            name: None,
+            instructions: None,
+        };
+        let (seats, _) = select_seats_with_names(
+            vec![request],
+            1,
+            Some("codex"),
+            &[ready(AgentKind::Claude)],
+            names,
+        )
+        .unwrap();
+
+        assert_eq!(seats[0].name, "claude-2");
+        assert_eq!(seats[0].status, SeatStatus::Active);
+    }
+
+    #[test]
+    fn replacement_names_the_added_seat() {
+        let names = ["claude".to_string()].into_iter().collect();
+        let request = SeatSpecInput {
+            agent: Some("cursor".into()),
+            model: None,
+            reasoning_effort: None,
+            name: None,
+            instructions: None,
+        };
+        let (seats, replacements) = select_seats_with_names(
+            vec![request],
+            1,
+            Some("codex"),
+            &[ready(AgentKind::Claude)],
+            names,
+        )
+        .unwrap();
+
+        assert_eq!(replacements[0].seat_name, seats[0].name);
+    }
+
+    #[test]
+    fn retired_seat_is_not_addressable_or_broadcast() {
+        let mut room = room("room-1", "/tmp/project", RoomStatus::Active);
+        room.seats = vec![
+            SeatRecord {
+                id: "active".into(),
+                name: "active".into(),
+                agent: AgentKind::Claude,
+                model: None,
+                reasoning_effort: None,
+                instructions: None,
+                native_session_id: None,
+                status: SeatStatus::Active,
+            },
+            SeatRecord {
+                id: "retired".into(),
+                name: "retired".into(),
+                agent: AgentKind::Grok,
+                model: None,
+                reasoning_effort: None,
+                instructions: None,
+                native_session_id: Some("session-1".into()),
+                status: SeatStatus::Retired,
+            },
+        ];
+
+        assert_eq!(resolve_recipients(&room, &["*".into()]).unwrap().len(), 1);
+        assert!(
+            resolve_recipients(&room, &["retired".into()])
+                .unwrap_err()
+                .to_string()
+                .contains("retired")
+        );
+        room.seats[0].status = SeatStatus::Retired;
+        assert!(resolve_recipients(&room, &["*".into()]).is_err());
+    }
+
+    #[test]
+    fn all_scope_lists_rooms_across_workspaces() {
+        let rooms = vec![
+            room("current", "/tmp/current", RoomStatus::Active),
+            room("other", "/tmp/other", RoomStatus::Inactive),
+        ];
+
+        assert_eq!(
+            rooms_for_scope(rooms.clone(), RoomScope::Current, "/tmp/current").len(),
+            1
+        );
+        assert_eq!(
+            rooms_for_scope(rooms, RoomScope::All, "/tmp/current").len(),
+            2
+        );
+    }
+
+    #[test]
+    fn null_room_scope_defaults_to_current() {
+        let args: ListRoomsArgs = serde_json::from_value(serde_json::json!({ "scope": null }))
+            .expect("null scope should deserialize");
+
+        assert!(matches!(args.scope.unwrap_or_default(), RoomScope::Current));
+    }
+
+    #[test]
+    fn observed_native_session_survives_a_failed_delivery() {
+        let (mismatch, persistable) = native_session_outcome(None, Some("session-1"));
+        assert!(mismatch.is_none());
+        assert_eq!(persistable, Some("session-1"));
+
+        let (mismatch, persistable) = native_session_outcome(Some("session-1"), Some("session-2"));
+        assert!(mismatch.is_some());
+        assert!(persistable.is_none());
+
+        let (mismatch, persistable) = native_session_outcome(Some("session-1"), None);
+        assert!(mismatch.is_none());
+        assert!(persistable.is_none());
+    }
+
+    #[test]
+    fn completed_answer_survives_session_persistence_failure() {
+        let mut delivery = DeliveryState {
+            delivery_id: "delivery-1".into(),
+            room_id: "room-1".into(),
+            seat_id: "seat-1".into(),
+            seat_name: "reviewer".into(),
+            agent: AgentKind::Claude,
+            status: DeliveryStatus::Running,
+            final_answer: None,
+            error: None,
+        };
+
+        finish_delivery(
+            &mut delivery,
+            None,
+            Some("session persistence failed".into()),
+            None,
+            Some("completed review".into()),
+        );
+
+        assert!(matches!(delivery.status, DeliveryStatus::Failed));
+        assert_eq!(delivery.final_answer.as_deref(), Some("completed review"));
+        assert_eq!(
+            delivery.error.as_deref(),
+            Some("session persistence failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn retiring_seat_preserves_its_native_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::new(dir.path().join("rooms.json"));
+        let workspace = current_workspace().unwrap();
+        let mut record = room("room-1", &workspace.to_string_lossy(), RoomStatus::Active);
+        record.seats.push(SeatRecord {
+            id: "seat-1".into(),
+            name: "reviewer".into(),
+            agent: AgentKind::Claude,
+            model: None,
+            reasoning_effort: None,
+            instructions: None,
+            native_session_id: Some("session-1".into()),
+            status: SeatStatus::Active,
+        });
+        store
+            .mutate(|state| {
+                state.rooms.push(record);
+                Ok(())
+            })
+            .unwrap();
+        let service = service(store.clone());
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        service
+            .workers
+            .lock()
+            .await
+            .insert(seat_key("room-1", "seat-1"), sender);
+
+        service
+            .retire_seat_inner(RetireSeatArgs {
+                room_id: "room-1".into(),
+                seat: "reviewer".into(),
+            })
+            .await
+            .unwrap();
+
+        let seat = &store.load().unwrap().rooms[0].seats[0];
+        assert_eq!(seat.status, SeatStatus::Retired);
+        assert_eq!(seat.native_session_id.as_deref(), Some("session-1"));
+        assert!(receiver.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn close_resume_keeps_one_worker_for_the_seat() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::new(dir.path().join("rooms.json"));
+        let workspace = current_workspace().unwrap();
+        let mut record = room("room-1", &workspace.to_string_lossy(), RoomStatus::Active);
+        record.seats.push(SeatRecord {
+            id: "seat-1".into(),
+            name: "reviewer".into(),
+            agent: AgentKind::Codex,
+            model: None,
+            reasoning_effort: None,
+            instructions: None,
+            native_session_id: Some("session-1".into()),
+            status: SeatStatus::Active,
+        });
+        store
+            .mutate(|state| {
+                state.rooms.push(record);
+                Ok(())
+            })
+            .unwrap();
+        let service = service(store.clone());
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let original = sender.clone();
+        service
+            .workers
+            .lock()
+            .await
+            .insert(seat_key("room-1", "seat-1"), sender);
+
+        service.close_room_inner("room-1").await.unwrap();
+        store
+            .mutate(|state| {
+                state.rooms[0].status = RoomStatus::Active;
+                Ok(())
+            })
+            .unwrap();
+        let resumed = service.worker_sender(seat_key("room-1", "seat-1")).await;
+
+        assert!(original.same_channel(&resumed));
     }
 
     #[test]
@@ -1154,16 +1769,72 @@ mod tests {
                 reasoning_effort: Some("high".into()),
                 instructions: None,
                 native_session_id: Some("thread-1".into()),
+                status: SeatStatus::Active,
             }],
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
         };
         let readiness = vec![ready(AgentKind::Claude)];
-        let replacements =
-            replace_unstarted_unready_seats(&mut room, &readiness, &[AgentKind::Claude]);
+        let replaceable = HashSet::from(["seat-1".to_string()]);
+        let replacements = replace_unstarted_unready_seats(
+            &mut room,
+            &readiness,
+            &[AgentKind::Claude],
+            &replaceable,
+        );
 
         assert!(replacements.is_empty());
         assert_eq!(room.seats[0].agent, AgentKind::Codex);
         assert_eq!(room.seats[0].native_session_id.as_deref(), Some("thread-1"));
+    }
+
+    #[test]
+    fn resume_does_not_replace_a_leased_first_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::new(dir.path().join("rooms.json"));
+        let workspace = current_workspace().unwrap();
+        let mut record = room("room-1", &workspace.to_string_lossy(), RoomStatus::Inactive);
+        record.seats.push(SeatRecord {
+            id: "seat-1".into(),
+            name: "reviewer".into(),
+            agent: AgentKind::Agy,
+            model: None,
+            reasoning_effort: None,
+            instructions: None,
+            native_session_id: None,
+            status: SeatStatus::Active,
+        });
+        store
+            .mutate(|state| {
+                state.rooms.push(record);
+                Ok(())
+            })
+            .unwrap();
+        let lease_store = StateStore::new(store.path().to_path_buf());
+        let lease = lease_store
+            .try_acquire_seat_lease("room-1", "seat-1")
+            .unwrap();
+        let service = service(store.clone());
+
+        let blocked = service
+            .resume_room_with_readiness("room-1", vec![ready(AgentKind::Claude)])
+            .unwrap();
+
+        assert!(blocked.replacements.is_empty());
+        assert_eq!(blocked.room.seats[0].agent, AgentKind::Agy);
+
+        drop(lease);
+        store
+            .mutate(|state| {
+                state.rooms[0].status = RoomStatus::Inactive;
+                Ok(())
+            })
+            .unwrap();
+        let replaced = service
+            .resume_room_with_readiness("room-1", vec![ready(AgentKind::Claude)])
+            .unwrap();
+
+        assert_eq!(replaced.replacements.len(), 1);
+        assert_eq!(replaced.room.seats[0].agent, AgentKind::Claude);
     }
 }

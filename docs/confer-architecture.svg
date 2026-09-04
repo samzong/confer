@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" data-blueprint-diagram="true" viewBox="0 0 1300 900" role="img" aria-labelledby="title desc" font-family="Comic Sans MS, Chalkboard SE, Bradley Hand, Segoe Print, cursive" text-rendering="geometricPrecision">
+  <title id="title">Confer architecture</title>
+  <desc id="desc">Confer is a host-moderated task room. Eight MCP tools manage room, seat, and message lifecycles. A central room router exchanges private messages and answers with logical seats. Every seat has a FIFO delivery queue and its own native agent session. Final answers pass through the in-memory delivery map back to the host. Room metadata is durable, and every native agent shares the same full-permission workspace.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#363b42"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#4d7eb7"/>
+    </marker>
+    <style>
+      .title { font-size: 36px; font-weight: 700; fill: #18191c; letter-spacing: 0.2px; }
+      .subtitle { font-size: 13px; fill: #59616c; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .group { font-size: 14px; font-weight: 700; fill: #34383f; }
+      .heading { font-size: 16px; font-weight: 700; fill: #18191c; }
+      .headingSmall { font-size: 14px; font-weight: 700; fill: #18191c; }
+      .body { font-size: 12px; fill: #30343a; }
+      .mono { font-size: 10.5px; fill: #626976; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .label { font-size: 10px; fill: #59616c; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .whiteHeading { font-size: 17px; font-weight: 700; fill: #fff9e9; }
+      .whiteBody { font-size: 11px; fill: #f2e8d1; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .box { stroke-width: 1.8; }
+      .line { stroke: #363b42; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+      .lineBlue { stroke: #4d7eb7; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+    </style>
+  </defs>
+
+  <rect width="1300" height="900" fill="#fff9e9"/>
+  <text x="650" y="52" class="title" text-anchor="middle">Private seats around one task room</text>
+  <text x="650" y="78" class="subtitle" text-anchor="middle">Private messages · explicit relays · one shared workspace</text>
+
+  <rect x="30" y="130" width="260" height="600" rx="18" fill="#fffdf6" stroke="#287bb5" stroke-width="2"/>
+  <text x="50" y="162" class="group">Eight MCP tools · stdio</text>
+
+  <rect x="50" y="192" width="220" height="142" rx="12" class="box" fill="#e9f4fb" stroke="#287bb5"/>
+  <text x="68" y="219" class="headingSmall">Room lifecycle</text>
+  <text x="68" y="245" class="mono">create_room · list_rooms</text>
+  <text x="68" y="266" class="mono">resume_room · close_room</text>
+  <text x="68" y="300" class="body">create · discover · retain</text>
+
+  <rect x="50" y="360" width="220" height="112" rx="12" class="box" fill="#edf7ef" stroke="#319760"/>
+  <text x="68" y="387" class="headingSmall">Seat lifecycle</text>
+  <text x="68" y="414" class="mono">add_seat · retire_seat</text>
+  <text x="68" y="443" class="body">change roles inside one room</text>
+  <text x="68" y="462" class="mono">retired session mapping stays</text>
+
+  <rect x="50" y="498" width="220" height="112" rx="12" class="box" fill="#fff2dd" stroke="#d98619"/>
+  <text x="68" y="525" class="headingSmall">Deliveries</text>
+  <text x="68" y="552" class="mono">send_message · wait_output</text>
+  <text x="68" y="581" class="body">address seats · collect answers</text>
+  <text x="68" y="600" class="mono">one FIFO queue per seat</text>
+
+  <text x="50" y="660" class="headingSmall">Eight tools, one moderator</text>
+  <text x="50" y="685" class="body">The host chooses seats and decides</text>
+  <text x="50" y="703" class="body">every follow-up or relay.</text>
+
+  <rect x="325" y="130" width="650" height="600" rx="26" fill="#fffdf6" stroke="#d98619" stroke-width="2.2"/>
+  <text x="350" y="162" class="group">Confer task room · logical collaboration boundary</text>
+
+  <rect x="365" y="184" width="570" height="48" rx="10" class="box" fill="#f6edf8" stroke="#8d58c7" stroke-dasharray="6 4"/>
+  <text x="385" y="205" class="headingSmall">Seat adapters</text>
+  <text x="385" y="222" class="mono">Claude · Codex · Cursor · Grok · Antigravity · agent types may repeat</text>
+
+  <rect x="540" y="260" width="220" height="84" rx="14" class="box" fill="#e9f4fb" stroke="#287bb5"/>
+  <text x="650" y="289" class="heading" text-anchor="middle">Current host</text>
+  <text x="650" y="312" class="body" text-anchor="middle">room member · moderator</text>
+  <text x="650" y="330" class="mono" text-anchor="middle">counts toward target_size</text>
+
+  <ellipse cx="650" cy="424" rx="102" ry="62" fill="#fff2dd" stroke="#d98619" stroke-width="2.2"/>
+  <text x="650" y="409" class="heading" text-anchor="middle">Room router</text>
+  <text x="650" y="431" class="mono" text-anchor="middle">src/mcp.rs</text>
+  <text x="650" y="451" class="body" text-anchor="middle">private FIFO queues</text>
+
+  <path d="M642 344 V362" class="lineBlue" marker-end="url(#arrowBlue)"/>
+  <path d="M658 362 V344" class="lineBlue" marker-end="url(#arrowBlue)"/>
+  <text x="626" y="358" class="label" text-anchor="end">call</text>
+  <text x="674" y="358" class="label">result</text>
+  <path d="M548 424 C500 424 490 466 470 500" class="lineBlue" marker-start="url(#arrowBlue)" marker-end="url(#arrowBlue)"/>
+  <path d="M752 424 C800 424 810 466 830 500" class="lineBlue" marker-start="url(#arrowBlue)" marker-end="url(#arrowBlue)"/>
+  <text x="520" y="457" class="label" text-anchor="end">private channel</text>
+  <text x="780" y="457" class="label">private channel</text>
+
+  <rect x="365" y="500" width="240" height="132" rx="14" class="box" fill="#fff2dd" stroke="#d98619"/>
+  <text x="385" y="528" class="heading">Seat A</text>
+  <text x="385" y="549" class="mono">logical address · private context</text>
+  <rect x="383" y="570" width="204" height="44" rx="9" class="box" fill="#edf7ef" stroke="#319760"/>
+  <text x="485" y="589" class="headingSmall" text-anchor="middle">native CLI + session</text>
+  <text x="485" y="606" class="mono" text-anchor="middle">one agent-owned context</text>
+
+  <rect x="695" y="500" width="240" height="132" rx="14" class="box" fill="#fff2dd" stroke="#d98619"/>
+  <text x="715" y="528" class="heading">Seat B</text>
+  <text x="715" y="549" class="mono">logical address · private context</text>
+  <rect x="713" y="570" width="204" height="44" rx="9" class="box" fill="#edf7ef" stroke="#319760"/>
+  <text x="815" y="589" class="headingSmall" text-anchor="middle">native CLI + session</text>
+  <text x="815" y="606" class="mono" text-anchor="middle">one agent-owned context</text>
+
+  <text x="650" y="652" class="label" text-anchor="middle">no seat-to-seat channel</text>
+  <rect x="400" y="672" width="500" height="40" rx="10" class="box" fill="#e9f4fb" stroke="#287bb5" stroke-dasharray="6 4"/>
+  <text x="650" y="697" class="mono" text-anchor="middle">add → active → retired · session preserved</text>
+
+  <rect x="1010" y="130" width="260" height="600" rx="18" fill="#fffdf6" stroke="#8d58c7" stroke-width="2"/>
+  <text x="1030" y="162" class="group">State split</text>
+
+  <rect x="1030" y="192" width="220" height="176" rx="12" class="box" fill="#f6edf8" stroke="#8d58c7"/>
+  <text x="1048" y="219" class="headingSmall">Durable room map</text>
+  <text x="1048" y="245" class="mono">~/.confer/rooms.json</text>
+  <text x="1048" y="275" class="body">room + seat status</text>
+  <text x="1048" y="295" class="body">selection + native session IDs</text>
+  <text x="1048" y="325" class="mono">no messages · no transcripts</text>
+  <text x="1048" y="348" class="body">advisory lease files hold no state</text>
+
+  <rect x="1030" y="410" width="220" height="154" rx="12" class="box" fill="#f2f1ee" stroke="#59616c"/>
+  <text x="1048" y="437" class="headingSmall">Live delivery map</text>
+  <text x="1048" y="463" class="mono">current MCP process</text>
+  <text x="1048" y="493" class="body">queued · running · answer · error</text>
+  <text x="1048" y="523" class="mono">lost on exit · never redelivered</text>
+  <text x="1048" y="546" class="body">wait_output observes this map</text>
+
+  <rect x="1030" y="606" width="220" height="86" rx="12" class="box" fill="#edf7ef" stroke="#319760"/>
+  <text x="1048" y="633" class="headingSmall">Seat lease</text>
+  <text x="1048" y="657" class="body">seat-locks/*.lock per seat</text>
+  <text x="1048" y="679" class="mono">serializes cross-process workers</text>
+
+  <path d="M708 373 H994 V280 H1030" class="line" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <path d="M742 397 H986 V487 H1030" class="line" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <text x="876" y="389" class="label" text-anchor="middle">final answer / wait_output</text>
+  <path d="M900 692 H986 V649 H1030" class="line" marker-end="url(#arrow)"/>
+
+  <path d="M485 614 V654 H340 V764 H430 V780" class="line" marker-end="url(#arrow)"/>
+  <path d="M815 614 V654 H960 V764 H870 V780" class="line" marker-end="url(#arrow)"/>
+  <text x="348" y="754" class="label">full-permission read / write</text>
+  <text x="952" y="754" class="label" text-anchor="end">full-permission read / write</text>
+
+  <rect x="30" y="780" width="1240" height="88" rx="16" fill="#24272c" stroke="#18191c" stroke-width="2"/>
+  <text x="55" y="813" class="whiteHeading">Shared workspace root · not an isolation boundary</text>
+  <text x="55" y="840" class="whiteBody">Every seat process can read or modify the same files.</text>
+  <text x="55" y="860" class="whiteBody">Confer hides peer messages, but shared files can reveal peer work or invalidate blind results.</text>
+</svg>

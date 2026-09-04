@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub(crate) const ROOMS_SCHEMA_VERSION: u32 = 2;
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum AgentKind {
@@ -65,6 +67,16 @@ pub(crate) struct SeatRecord {
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) instructions: Option<String>,
     pub(crate) native_session_id: Option<String>,
+    #[serde(default)]
+    pub(crate) status: SeatStatus,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SeatStatus {
+    #[default]
+    Active,
+    Retired,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -95,7 +107,7 @@ pub(crate) struct RoomsFile {
 impl Default for RoomsFile {
     fn default() -> Self {
         Self {
-            schema_version: 1,
+            schema_version: ROOMS_SCHEMA_VERSION,
             rooms: Vec::new(),
         }
     }
