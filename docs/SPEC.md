@@ -24,7 +24,7 @@ MCP is the public protocol. Headless commands and native streaming protocols rem
 
 A room belongs to one normalized workspace. In a Git repository, the workspace is the canonical result of `git rev-parse --show-toplevel`. Different Git worktrees are different workspaces. Outside Git, the canonical current directory is the workspace.
 
-The current MCP host is a room member and moderator. The default room size is three members including the current host, so the usual default is two external seats. A caller may request another size or explicit seats. The same agent type may occupy multiple seats, with the same or different models.
+The current MCP host is a room member and moderator. The default room size is three members including the current host, so the usual default is two external seats. At creation, `target_size` requests an initial total member count including the host. Explicit seats may increase that initial size, and `add_seat` may grow an active room later. The same agent type may occupy multiple seats, with the same or different models.
 
 A room is the task container. Active rooms may add seats as new roles become useful and retire seats whose role is complete. Retiring a seat preserves its metadata and native session mapping but permanently removes it from direct, multicast, and broadcast addressing.
 
@@ -67,7 +67,7 @@ Room metadata writes use a short advisory lock and atomic replacement. Current w
 
 ## Readiness and selection
 
-Readiness checks are local and run every time a room is created or resumed. They inspect the executable and local authentication or configuration state without calling a model or checking quota. A positive result means `locally_ready`; it does not guarantee provider availability, model access, or remaining quota.
+Readiness checks are local and run when a room is created or resumed, when a seat is added, and before each delivery starts. They inspect the executable and local authentication or configuration state without calling a model or checking quota. A positive result means `locally_ready`; it does not guarantee provider availability, model access, or remaining quota.
 
 The current host, guided by the Skill, normally selects seat specifications from the task. Explicit user choices take precedence. When the host supplies no seats, Confer fills the requested size from locally ready supported agents.
 
@@ -108,7 +108,7 @@ Adds one private seat to an active room in the current workspace. The input uses
 
 ### `retire_seat`
 
-Retires one seat by name or ID in an active room in the current workspace. A seat with a known running delivery returns `seat_busy`. Retirement preserves the native session mapping but is irreversible.
+Retires one seat by name or ID in an active room in the current workspace. A busy seat returns `seat_busy`. Retirement preserves the native session mapping but is irreversible.
 
 ### `list_rooms`
 
@@ -126,17 +126,17 @@ Input:
 - `recipients`: one or more seat names or IDs, or `*` for broadcast;
 - `message`.
 
-The send returns one new `delivery_id` per recipient plus immediate acceptance or readiness errors. Accepted deliveries may be `queued` or `running`, and the caller uses `wait_output` for completion.
+The send returns one receipt and new `delivery_id` per recipient plus immediate acceptance or readiness errors. The receipt does not include delivery status; the caller uses `wait_output` to observe `queued`, `running`, `completed`, or `failed` state.
 
 ### `wait_output`
 
-Waits for specified deliveries or the room’s current live deliveries, with an optional timeout.
+Waits for specified deliveries or the room’s current live deliveries. `timeout_ms` defaults to `120000`, accepts `0` for an immediate snapshot, and is capped at `600000`.
 
 Output contains each delivery’s `queued`, `running`, `completed`, or `failed` status, final assistant answer, and error. It does not expose thinking, token deltas, or intermediate tool events. A timeout returns completed results and current non-terminal statuses without cancelling them.
 
 ### `resume_room`
 
-Reactivates one room by `room_id`, rechecks local readiness, and restores adapter addressing from native session metadata. It returns the current roster, unavailable sessions, and replacements. It does not make a model call.
+Reactivates one room by `room_id`, rechecks local readiness, and restores adapter addressing from native session metadata. It returns the current roster, readiness results, and replacements. Only unstarted unavailable seats may be replaced; a started seat keeps its native session mapping even when temporarily unready. It does not make a model call.
 
 ### `close_room`
 
