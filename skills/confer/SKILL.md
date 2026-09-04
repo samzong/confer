@@ -1,6 +1,6 @@
 ---
 name: confer
-description: Coordinate Claude Code, Codex, Cursor Agent, and Grok through private local MCP rooms. Trigger when the user asks to consult another agent, have multiple agents investigate independently, divide planning and implementation, compare answers, or request an independent review without copying between terminals.
+description: Coordinate Claude Code, Codex, Cursor Agent, Grok, and Antigravity CLI through private local MCP rooms. Trigger when the user asks to consult another agent, have multiple agents investigate independently, divide planning and implementation, compare answers, or request an independent review without copying between terminals.
 ---
 
 # Confer

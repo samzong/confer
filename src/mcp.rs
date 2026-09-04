@@ -506,7 +506,7 @@ impl ConferMcp {
             let needs_handshake = first_message
                 && matches!(
                     seat.agent,
-                    AgentKind::Claude | AgentKind::Codex | AgentKind::Grok
+                    AgentKind::Claude | AgentKind::Codex | AgentKind::Grok | AgentKind::Agy
                 );
             let (sender, receiver) = if needs_handshake {
                 let (sender, receiver) = oneshot::channel();

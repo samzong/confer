@@ -7,10 +7,17 @@ pub(crate) enum AgentKind {
     Codex,
     Cursor,
     Grok,
+    Agy,
 }
 
 impl AgentKind {
-    pub(crate) const ALL: [Self; 4] = [Self::Claude, Self::Codex, Self::Cursor, Self::Grok];
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Claude,
+        Self::Codex,
+        Self::Cursor,
+        Self::Grok,
+        Self::Agy,
+    ];
 
     pub(crate) fn id(self) -> &'static str {
         match self {
@@ -18,6 +25,7 @@ impl AgentKind {
             Self::Codex => "codex",
             Self::Cursor => "cursor",
             Self::Grok => "grok",
+            Self::Agy => "agy",
         }
     }
 
@@ -27,6 +35,7 @@ impl AgentKind {
             "codex" => Some(Self::Codex),
             "cursor" | "cursor-agent" | "agent" => Some(Self::Cursor),
             "grok" | "grok-build" => Some(Self::Grok),
+            "agy" | "antigravity" | "antigravity-cli" => Some(Self::Agy),
             _ => None,
         }
     }
@@ -37,6 +46,7 @@ impl AgentKind {
             Self::Codex => &["codex"],
             Self::Cursor => &["agent", "cursor-agent"],
             Self::Grok => &["grok"],
+            Self::Agy => &["agy"],
         }
     }
 }

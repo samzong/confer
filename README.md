@@ -1,6 +1,6 @@
 # Confer
 
-Confer gives the current coding agent a local room for consulting Claude Code, Codex, Cursor Agent, and Grok Build through MCP.
+Confer gives the current coding agent a local room for consulting Claude Code, Codex, Cursor Agent, Grok Build, and Antigravity CLI through MCP.
 
 ## Install
 
@@ -10,7 +10,7 @@ confer mcp install
 confer skill install --yes
 ```
 
-MCP registration and Skill installation are independent. Both commands detect only the four supported agents.
+MCP registration and Skill installation are independent. MCP registration detects Claude Code, Codex, Cursor, Grok, and Antigravity CLI. Skill installation remains limited to Claude Code, Codex, Cursor, and Grok.
 
 ## Commands
 

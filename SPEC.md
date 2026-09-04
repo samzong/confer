@@ -16,7 +16,7 @@ Typical requests include:
 ## Goals
 
 - Expose a small MCP surface for temporary multi-agent rooms.
-- Support Claude Code, Codex, Cursor Agent, and Grok Build only.
+- Support Claude Code, Codex, Cursor Agent, Grok Build, and Antigravity CLI.
 - Let the current host choose participants by agent, model, reasoning effort, name, and private instructions.
 - Preserve each participant’s native session across MCP host restarts.
 - Support direct, multicast, and broadcast messages without a Confer-owned durable queue.
@@ -31,12 +31,12 @@ Typical requests include:
 - Confer does not inspect provider quotas or make model calls during readiness checks.
 - Confer does not persist messages, outputs, pending deliveries, tool events, thinking, or code snapshots.
 - Confer does not expose agent discovery as a public MCP tool.
-- Confer does not support OpenCode, Gemini, DeepSeek, Kimi, or other agents in v0.1.
+- Confer does not support OpenCode, Gemini CLI, DeepSeek, Kimi, or other agents in v0.1.
 - Confer does not duplicate room operations as ordinary CLI subcommands.
 
 ## Supported participants and hosts
 
-The same four products can act as external room participants and as MCP hosts:
+The supported products can act as external room participants and as MCP hosts:
 
 | ID | Product | Participant command | MCP registration |
 | --- | --- | --- | --- |
@@ -44,6 +44,7 @@ The same four products can act as external room participants and as MCP hosts:
 | `codex` | Codex | `codex exec` | native `codex mcp` command |
 | `cursor` | Cursor Agent | `agent` or `cursor-agent` | `~/.cursor/mcp.json` |
 | `grok` | Grok Build | `grok` | native `grok mcp` command |
+| `agy` | Antigravity CLI | `agy` | native `agy mcp` command |
 
 Confer may use different transport details for each adapter. MCP is the public protocol. Headless commands and any native streaming protocol remain adapter internals.
 
@@ -175,7 +176,7 @@ confer skill install [--scope user|project] [--agent <id>]... [--dry-run] [--yes
 
 `confer mcp` serves stdio MCP. Room operations are not exposed as ordinary CLI commands.
 
-MCP and Skill installation are deliberately independent. `confer mcp install` never installs the Skill, and `confer skill install` never changes MCP configuration. Both commands auto-detect only Claude Code, Codex, Cursor, and Grok when no `--agent` is supplied.
+MCP and Skill installation are deliberately independent. `confer mcp install` never installs the Skill, and `confer skill install` never changes MCP configuration. MCP installation auto-detects Claude Code, Codex, Cursor, Grok, and Antigravity CLI. Skill installation auto-detects only Claude Code, Codex, Cursor, and Grok.
 
 `confer skill install` embeds the canonical Skill bundle and delegates ownership, conflict protection, update behavior, target paths, scope handling, and dry-run reporting to Kitup. User scope is the default.
 
@@ -220,7 +221,7 @@ Model and reasoning fields are requests to the native CLI. An unsupported value 
 
 Confer uses the room workspace as each child process working directory. It does not create filesystem isolation. Independent seats may therefore read or modify the same files even when their messages are isolated.
 
-Confer does not force bypass, auto-approval, sandbox, plan, or write flags. Cursor receives `--trust` so its non-interactive process can enter the Room workspace selected by the current host; this does not approve tool execution. Native host configuration and explicit task instructions remain authoritative. A native permission prompt or refusal is returned as an adapter result.
+Confer launches every seat with that agent's full-permission flag so a non-interactive process is never blocked on an approval prompt it cannot answer: Claude and Antigravity receive `--dangerously-skip-permissions`, Codex `--dangerously-bypass-approvals-and-sandbox`, Cursor `--trust --force`, and Grok `--permission-mode bypassPermissions`. Seats therefore run with the same authority as the current host and without sandbox isolation. Explicit task instructions remain the only limit on what a seat is asked to do.
 
 ## Errors
 
@@ -243,9 +244,9 @@ The release is acceptable when all of the following are proven from a clean chec
 - `make check` passes formatting, lint, tests, and dependency audit.
 - `make install` installs the `confer` binary used by subsequent checks.
 - `confer mcp capabilities` reports exactly the six room tools.
-- `confer mcp install` installs or updates `confer` in all four detected MCP hosts without disturbing unrelated entries.
-- `confer skill install` installs the Kitup-owned Skill into all four detected supported hosts.
-- Local readiness finds Claude Code, Codex, Cursor Agent, and Grok without a model call.
+- `confer mcp install` installs or updates `confer` in detected MCP hosts without disturbing unrelated entries.
+- `confer skill install` installs the Kitup-owned Skill into detected Claude Code, Codex, Cursor, and Grok hosts.
+- Local readiness finds Claude Code, Codex, Cursor Agent, Grok, and Antigravity CLI without a model call.
 - Real adapter smoke calls create and resume native sessions with final-output parsing.
 - A newly initialized Git repository can use an installed host’s Confer MCP to create a room, send a real request to at least one external agent, wait for the answer, list and resume the room, and close it.
 - Two external seats can receive the same prompt without seeing one another’s answers.

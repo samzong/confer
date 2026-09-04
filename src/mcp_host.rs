@@ -16,10 +16,17 @@ enum Host {
     Codex,
     Cursor,
     Grok,
+    Agy,
 }
 
 impl Host {
-    const ALL: [Self; 4] = [Self::Claude, Self::Codex, Self::Cursor, Self::Grok];
+    const ALL: [Self; 5] = [
+        Self::Claude,
+        Self::Codex,
+        Self::Cursor,
+        Self::Grok,
+        Self::Agy,
+    ];
 
     fn id(self) -> &'static str {
         match self {
@@ -27,6 +34,7 @@ impl Host {
             Self::Codex => "codex",
             Self::Cursor => "cursor",
             Self::Grok => "grok",
+            Self::Agy => "agy",
         }
     }
 
@@ -36,6 +44,7 @@ impl Host {
             Self::Codex => &["codex"],
             Self::Cursor => &["agent", "cursor-agent"],
             Self::Grok => &["grok"],
+            Self::Agy => &["agy"],
         }
     }
 
@@ -45,8 +54,11 @@ impl Host {
             "codex" => Ok(Self::Codex),
             "cursor" | "cursor-agent" | "agent" => Ok(Self::Cursor),
             "grok" | "grok-build" => Ok(Self::Grok),
+            "agy" | "antigravity" | "antigravity-cli" => Ok(Self::Agy),
             other => {
-                bail!("unknown MCP host '{other}'; supported hosts: claude, codex, cursor, grok")
+                bail!(
+                    "unknown MCP host '{other}'; supported hosts: claude, codex, cursor, grok, agy"
+                )
             }
         }
     }
@@ -150,6 +162,13 @@ fn add_args(host: Host, bin: &str) -> Option<Vec<String>> {
             bin.into(),
             SERVER_ARG.into(),
         ]),
+        Host::Agy => Some(vec![
+            "mcp".into(),
+            "add".into(),
+            SERVER_NAME.into(),
+            bin.into(),
+            SERVER_ARG.into(),
+        ]),
     }
 }
 
@@ -171,6 +190,7 @@ fn remove_args(host: Host) -> Option<Vec<String>> {
             "user".into(),
             SERVER_NAME.into(),
         ]),
+        Host::Agy => Some(vec!["mcp".into(), "remove".into(), SERVER_NAME.into()]),
     }
 }
 
@@ -188,7 +208,7 @@ fn run_hosts(hosts: Vec<Host>, dry_run: bool, action: HostAction) -> Result<()> 
         }
     }
     if changed == 0 && errors.is_empty() {
-        bail!("no supported MCP hosts found on PATH (claude, codex, cursor, grok)");
+        bail!("no supported MCP hosts found on PATH (claude, codex, cursor, grok, agy)");
     }
     if errors.is_empty() {
         Ok(())
@@ -474,7 +494,9 @@ fn looks_like_already_exists(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Host, add_args, read_cursor_config, remove_cursor_config, write_cursor_config};
+    use super::{
+        Host, add_args, read_cursor_config, remove_args, remove_cursor_config, write_cursor_config,
+    };
 
     #[test]
     fn native_commands_match_host_contracts() {
@@ -490,6 +512,11 @@ mod tests {
                 "mcp", "add", "--scope", "user", "confer", "--", "confer", "mcp"
             ]
         );
+        assert_eq!(
+            add_args(Host::Agy, "confer").unwrap(),
+            ["mcp", "add", "confer", "confer", "mcp"]
+        );
+        assert_eq!(remove_args(Host::Agy).unwrap(), ["mcp", "remove", "confer"]);
     }
 
     #[test]

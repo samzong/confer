@@ -38,7 +38,7 @@ enum McpCommands {
     Install {
         #[arg(
             long = "agent",
-            help = "Target host: claude, codex, cursor, or grok. Repeat for multiple hosts. Use '*' for all."
+            help = "Target host: claude, codex, cursor, grok, or agy. Repeat for multiple hosts. Use '*' for all."
         )]
         agents: Vec<String>,
         #[arg(long, help = "Print host changes without applying them")]
@@ -50,7 +50,7 @@ enum McpCommands {
     Uninstall {
         #[arg(
             long = "agent",
-            help = "Target host: claude, codex, cursor, or grok. Repeat for multiple hosts. Use '*' for all."
+            help = "Target host: claude, codex, cursor, grok, or agy. Repeat for multiple hosts. Use '*' for all."
         )]
         agents: Vec<String>,
         #[arg(long, help = "Print host changes without applying them")]

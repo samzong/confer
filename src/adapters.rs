@@ -62,7 +62,7 @@ pub(crate) fn check_readiness(agent: AgentKind) -> Readiness {
 pub(crate) async fn reserve_session(agent: AgentKind, executable: &Path) -> Result<Option<String>> {
     match agent {
         AgentKind::Claude | AgentKind::Grok => Ok(Some(uuid::Uuid::new_v4().to_string())),
-        AgentKind::Codex => Ok(None),
+        AgentKind::Codex | AgentKind::Agy => Ok(None),
         AgentKind::Cursor => {
             let output = Command::new(executable)
                 .arg("create-chat")
@@ -281,7 +281,13 @@ fn build_command(invocation: &Invocation) -> Result<Command> {
     command.current_dir(&invocation.workspace);
     match invocation.agent {
         AgentKind::Claude => {
-            command.args(["-p", "--output-format", "stream-json", "--verbose"]);
+            command.args([
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--dangerously-skip-permissions",
+            ]);
             if let Some(id) = &invocation.native_session_id {
                 command.args(if invocation.first_message {
                     ["--session-id", id.as_str()]
@@ -308,6 +314,7 @@ fn build_command(invocation: &Invocation) -> Result<Command> {
                     .context("Codex resume requires a native session ID")?;
                 command.args(["resume", "--json", id]);
             }
+            command.arg("--dangerously-bypass-approvals-and-sandbox");
             if let Some(model) = &invocation.model {
                 command.args(["--model", model]);
             }
@@ -326,6 +333,7 @@ fn build_command(invocation: &Invocation) -> Result<Command> {
                 "--output-format",
                 "stream-json",
                 "--trust",
+                "--force",
                 "--resume",
                 id,
             ]);
@@ -346,7 +354,12 @@ fn build_command(invocation: &Invocation) -> Result<Command> {
             command.arg(prompt);
         }
         AgentKind::Grok => {
-            command.args(["--output-format", "streaming-json"]);
+            command.args([
+                "--output-format",
+                "streaming-json",
+                "--permission-mode",
+                "bypassPermissions",
+            ]);
             command.arg("--cwd").arg(&invocation.workspace);
             if let Some(id) = &invocation.native_session_id {
                 command.args(if invocation.first_message {
@@ -362,6 +375,31 @@ fn build_command(invocation: &Invocation) -> Result<Command> {
                 command.args(["--reasoning-effort", effort]);
             }
             command.args(["-p", &prompt]);
+        }
+        AgentKind::Agy => {
+            command.args([
+                "-p",
+                &prompt,
+                "--output-format",
+                "json",
+                "--disable-slash-commands",
+                "--dangerously-skip-permissions",
+            ]);
+            command.arg("--add-dir").arg(&invocation.workspace);
+            if let Some(id) = &invocation.native_session_id {
+                command.args(["--conversation", id]);
+            } else if !invocation.first_message {
+                bail!("Antigravity resume requires a native conversation ID");
+            }
+            if let Some(model) = &invocation.model {
+                command.args(["--model", model]);
+            }
+            if let Some(effort) = &invocation.reasoning_effort {
+                if !["low", "medium", "high"].contains(&effort.as_str()) {
+                    bail!("unsupported Antigravity reasoning_effort '{effort}'");
+                }
+                command.args(["--effort", effort]);
+            }
         }
     }
     Ok(command)
@@ -418,6 +456,7 @@ fn has_local_auth_marker(agent: AgentKind) -> bool {
         AgentKind::Codex => std::env::var_os("OPENAI_API_KEY").is_some(),
         AgentKind::Cursor => std::env::var_os("CURSOR_API_KEY").is_some(),
         AgentKind::Grok => std::env::var_os("XAI_API_KEY").is_some(),
+        AgentKind::Agy => false,
     };
     if env_ready {
         return true;
@@ -434,6 +473,17 @@ fn has_local_auth_marker(agent: AgentKind) -> bool {
         AgentKind::Codex => vec![home.join(".codex").join("auth.json")],
         AgentKind::Cursor => vec![home.join(".cursor").join("cli-config.json")],
         AgentKind::Grok => vec![home.join(".grok").join("auth.json")],
+        AgentKind::Agy => vec![
+            home.join(".gemini")
+                .join("antigravity-cli")
+                .join("jetski_state.pbtxt"),
+            home.join(".gemini")
+                .join("antigravity-cli")
+                .join("settings.json"),
+            home.join(".gemini")
+                .join("antigravity-cli")
+                .join("installation_id"),
+        ],
     };
     markers.iter().any(|marker| marker.is_file())
 }
@@ -447,6 +497,8 @@ fn extract_session_id(value: &Value) -> Option<String> {
         "threadId",
         "chat_id",
         "chatId",
+        "conversation_id",
+        "conversationId",
     ] {
         if let Some(id) = object
             .get(key)
@@ -474,6 +526,7 @@ fn session_ready(agent: AgentKind, value: &Value) -> bool {
         AgentKind::Codex => kind == Some("thread.started"),
         AgentKind::Grok => kind == Some("available_commands"),
         AgentKind::Cursor => true,
+        AgentKind::Agy => object.contains_key("conversation_id"),
     }
 }
 
@@ -485,6 +538,13 @@ fn extract_answer(value: &Value) -> Option<String> {
         .filter(|v| !v.is_empty())
     {
         return Some(result.to_string());
+    }
+    if let Some(response) = object
+        .get("response")
+        .and_then(Value::as_str)
+        .filter(|v| !v.is_empty())
+    {
+        return Some(response.to_string());
     }
     if let Some(output) = object
         .get("final_output")
@@ -701,6 +761,22 @@ mod tests {
             AgentKind::Grok,
             &serde_json::json!({ "type": "available_commands" })
         ));
+        assert!(session_ready(
+            AgentKind::Agy,
+            &serde_json::json!({ "conversation_id": "conv-1", "status": "SUCCESS" })
+        ));
+    }
+
+    #[test]
+    fn parses_agy_result() {
+        let value = serde_json::json!({
+            "conversation_id": "agy-conv-123",
+            "status": "SUCCESS",
+            "response": "AGY_OK\n",
+            "duration_seconds": 1.2
+        });
+        assert_eq!(extract_session_id(&value).as_deref(), Some("agy-conv-123"));
+        assert_eq!(extract_answer(&value).as_deref(), Some("AGY_OK\n"));
     }
 
     #[test]
@@ -729,5 +805,72 @@ mod tests {
             first_message: false,
         };
         assert!(build_command(&invocation).is_err());
+    }
+
+    #[test]
+    fn builds_agy_command_for_first_and_resume_messages() {
+        let first = Invocation {
+            agent: AgentKind::Agy,
+            executable: PathBuf::from("agy"),
+            workspace: PathBuf::from("/workspace"),
+            native_session_id: None,
+            model: Some("gemini-3.8-flash-high".into()),
+            reasoning_effort: Some("high".into()),
+            instructions: Some("Do not edit files.".into()),
+            message: "Analyze this".into(),
+            first_message: true,
+        };
+        let command = build_command(&first).unwrap();
+        let debug = format!("{command:?}");
+        assert!(debug.contains("--add-dir"));
+        assert!(debug.contains("/workspace"));
+        assert!(debug.contains("--model"));
+        assert!(debug.contains("gemini-3.8-flash-high"));
+        assert!(debug.contains("--effort"));
+        assert!(debug.contains("high"));
+        assert!(debug.contains("--output-format"));
+        assert!(debug.contains("json"));
+
+        let resume = Invocation {
+            agent: AgentKind::Agy,
+            executable: PathBuf::from("agy"),
+            workspace: PathBuf::from("/workspace"),
+            native_session_id: Some("conv-456".into()),
+            model: None,
+            reasoning_effort: None,
+            instructions: None,
+            message: "Next step".into(),
+            first_message: false,
+        };
+        let command = build_command(&resume).unwrap();
+        let debug = format!("{command:?}");
+        assert!(debug.contains("--conversation"));
+        assert!(debug.contains("conv-456"));
+
+        let invalid_resume = Invocation {
+            agent: AgentKind::Agy,
+            executable: PathBuf::from("agy"),
+            workspace: PathBuf::from("/workspace"),
+            native_session_id: None,
+            model: None,
+            reasoning_effort: None,
+            instructions: None,
+            message: "Next step".into(),
+            first_message: false,
+        };
+        assert!(build_command(&invalid_resume).is_err());
+
+        let invalid_effort = Invocation {
+            agent: AgentKind::Agy,
+            executable: PathBuf::from("agy"),
+            workspace: PathBuf::from("/workspace"),
+            native_session_id: None,
+            model: None,
+            reasoning_effort: Some("xhigh".into()),
+            instructions: None,
+            message: "Analyze this".into(),
+            first_message: true,
+        };
+        assert!(build_command(&invalid_effort).is_err());
     }
 }
