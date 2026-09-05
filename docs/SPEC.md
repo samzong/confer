@@ -158,6 +158,8 @@ MCP and Skill installation are deliberately independent. `confer mcp install` ne
 
 `confer mcp install` follows each host’s supported registration mechanism. Repeated installation updates the Confer-owned registration without deleting unrelated MCP entries. Uninstall removes only the `confer` entry.
 
+Explicit `--agent cursor` registration and removal edit Cursor's MCP configuration without requiring the participant CLI on `PATH`. Default selection and `--agent '*'` still discover installed host executables; they do not create Cursor configuration on machines without its CLI. Other hosts require their native registration command. Registration does not establish participant readiness or authentication.
+
 ## Adapter contract
 
 Every adapter must:
