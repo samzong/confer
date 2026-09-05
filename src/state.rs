@@ -176,43 +176,58 @@ impl StateStore {
     }
 }
 
-pub(crate) fn current_workspace() -> Result<PathBuf> {
-    let cwd = std::env::current_dir().context("cannot determine current directory")?;
+pub(crate) fn canonical_workspace(path: &Path) -> Result<PathBuf> {
+    if !path.is_absolute() {
+        bail!("workspace must be an absolute path");
+    }
+    let workspace = path
+        .canonicalize()
+        .with_context(|| format!("failed to resolve workspace {}", path.display()))?;
+    if !workspace.is_dir() {
+        bail!("workspace {} is not a directory", path.display());
+    }
+    Ok(workspace)
+}
+
+pub(crate) fn normalize_workspace(path: &Path) -> Result<PathBuf> {
+    let workspace = canonical_workspace(path)?;
     let output = Command::new("git")
+        .arg("-C")
+        .arg(&workspace)
         .args(["rev-parse", "--show-toplevel"])
-        .current_dir(&cwd)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
         .output();
     let candidate = match output {
         Ok(output) if output.status.success() => {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if path.is_empty() {
-                cwd
+                workspace
             } else {
                 PathBuf::from(path)
             }
         }
-        _ => cwd,
+        _ => workspace,
     };
-    candidate
-        .canonicalize()
-        .with_context(|| format!("failed to resolve workspace {}", candidate.display()))
+    canonical_workspace(&candidate)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::StateStore;
+    use super::{StateStore, canonical_workspace, normalize_workspace};
     use crate::types::{HostRecord, RoomRecord, SeatStatus};
 
     #[test]
     fn cache_round_trip_preserves_rooms() {
         let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
         let store = StateStore::new(dir.path().join("rooms.json"));
         store
             .mutate(|state| {
                 state.rooms.push(RoomRecord {
                     id: "room-1".into(),
                     name: "Review".into(),
-                    workspace: "/tmp/project".into(),
+                    workspace: workspace.to_string_lossy().into_owned(),
                     host: HostRecord {
                         agent: Some("codex".into()),
                     },
@@ -227,10 +242,107 @@ mod tests {
         let state = store.load().unwrap();
         assert_eq!(state.rooms.len(), 1);
         assert_eq!(state.rooms[0].id, "room-1");
+        assert!(store.room_for_workspace("room-1", &workspace).is_ok());
+        let other = tempfile::tempdir().unwrap();
+        assert!(
+            store
+                .room_for_workspace("room-1", &other.path().canonicalize().unwrap())
+                .is_err()
+        );
         let persisted: serde_json::Value =
             serde_json::from_slice(&std::fs::read(store.path()).unwrap()).unwrap();
         assert_eq!(persisted["schema_version"], 3);
         assert!(persisted["rooms"][0].get("status").is_none());
+    }
+
+    #[test]
+    fn workspace_requires_an_existing_absolute_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        assert_eq!(canonical_workspace(dir.path()).unwrap(), workspace);
+        assert_eq!(normalize_workspace(dir.path()).unwrap(), workspace);
+        let file = dir.path().join("file");
+        std::fs::write(&file, "content").unwrap();
+        for path in [
+            std::path::PathBuf::new(),
+            ".".into(),
+            "src".into(),
+            dir.path().join("missing"),
+            file,
+        ] {
+            assert!(canonical_workspace(&path).is_err());
+            assert!(normalize_workspace(&path).is_err());
+        }
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(&workspace, &link).unwrap();
+            assert_eq!(canonical_workspace(&link).unwrap(), workspace);
+            assert_eq!(normalize_workspace(&link).unwrap(), workspace);
+        }
+    }
+
+    #[test]
+    fn workspace_normalization_ignores_inherited_git_location() {
+        if let Some(workspace) = std::env::var_os("CONFER_TEST_WORKSPACE") {
+            let workspace = std::path::PathBuf::from(workspace);
+            let subdir = workspace.join("src");
+            assert_eq!(canonical_workspace(&subdir).unwrap(), subdir);
+            assert_eq!(normalize_workspace(&subdir).unwrap(), workspace);
+            let outside = workspace.parent().unwrap();
+            assert_eq!(normalize_workspace(outside).unwrap(), outside);
+            let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            assert_eq!(
+                normalize_workspace(&checkout.join("src")).unwrap(),
+                checkout.canonicalize().unwrap()
+            );
+            #[cfg(unix)]
+            {
+                assert_eq!(
+                    normalize_workspace(&outside.join("link")).unwrap(),
+                    workspace
+                );
+            }
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("task");
+        let other = dir.path().join("other");
+        for path in [&workspace, &other] {
+            let output = std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .arg(path)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::fs::create_dir(workspace.join("src")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(workspace.join("src"), dir.path().join("link")).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "state::tests::workspace_normalization_ignores_inherited_git_location",
+                "--nocapture",
+            ])
+            .env("CONFER_TEST_WORKSPACE", workspace.canonicalize().unwrap())
+            .env("GIT_DIR", other.join(".git"))
+            .env("GIT_WORK_TREE", &other)
+            .current_dir(&other)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

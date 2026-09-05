@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 use chrono::{SecondsFormat, Utc};
 use rmcp::model::CallToolResult;
@@ -23,6 +25,7 @@ pub(super) struct SeatSpecInput {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub(super) struct CreateRoomArgs {
+    pub(super) workspace: PathBuf,
     #[serde(default)]
     pub(super) name: Option<String>,
     #[serde(default)]
@@ -45,23 +48,28 @@ pub(super) enum RoomScope {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub(super) struct ListRoomsArgs {
     #[serde(default)]
+    pub(super) workspace: Option<PathBuf>,
+    #[serde(default)]
     pub(super) scope: Option<RoomScope>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub(super) struct AddSeatArgs {
+    pub(super) workspace: PathBuf,
     pub(super) room_id: String,
     pub(super) seat: SeatSpecInput,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub(super) struct RetireSeatArgs {
+    pub(super) workspace: PathBuf,
     pub(super) room_id: String,
     pub(super) seat: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub(super) struct SendMessageArgs {
+    pub(super) workspace: PathBuf,
     pub(super) room_id: String,
     pub(super) recipients: Vec<String>,
     pub(super) message: String,
@@ -69,6 +77,7 @@ pub(super) struct SendMessageArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub(super) struct WaitOutputArgs {
+    pub(super) workspace: PathBuf,
     pub(super) room_id: String,
     #[serde(default)]
     pub(super) delivery_ids: Vec<String>,
@@ -157,11 +166,13 @@ pub(super) fn room_view(room: &RoomRecord) -> RoomView {
 pub(super) fn rooms_for_scope(
     rooms: Vec<RoomRecord>,
     scope: RoomScope,
-    workspace: &str,
+    workspace: Option<&str>,
 ) -> Vec<RoomView> {
     let mut rooms = rooms
         .into_iter()
-        .filter(|room| matches!(scope, RoomScope::All) || room.workspace == workspace)
+        .filter(|room| {
+            matches!(scope, RoomScope::All) || Some(room.workspace.as_str()) == workspace
+        })
         .map(|room| room_view(&room))
         .collect::<Vec<_>>();
     rooms.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
@@ -187,7 +198,10 @@ fn to_json(value: impl Serialize) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{ListRoomsArgs, RoomScope, rooms_for_scope};
+    use super::{ListRoomsArgs, RoomScope};
+    use crate::mcp::ConferMcp;
+    use crate::mcp::delivery::DeliveryRuntime;
+    use crate::state::StateStore;
     use crate::types::{HostRecord, RoomRecord};
 
     fn room(id: &str, workspace: &str) -> RoomRecord {
@@ -206,16 +220,70 @@ mod tests {
 
     #[test]
     fn all_scope_lists_rooms_across_workspaces() {
-        let rooms = vec![room("current", "/tmp/current"), room("other", "/tmp/other")];
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let store = StateStore::new(dir.path().join("rooms.json"));
+        store
+            .mutate(|state| {
+                state.rooms = vec![
+                    room("current", &workspace.to_string_lossy()),
+                    room(
+                        "other",
+                        &other.path().canonicalize().unwrap().to_string_lossy(),
+                    ),
+                ];
+                Ok(())
+            })
+            .unwrap();
+        let server = ConferMcp {
+            store,
+            runtime: DeliveryRuntime::new(),
+            tool_router: ConferMcp::tool_router(),
+        };
+        let output = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(&workspace)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let subdir = workspace.join("src");
+        std::fs::create_dir(&subdir).unwrap();
 
-        assert_eq!(
-            rooms_for_scope(rooms.clone(), RoomScope::Current, "/tmp/current").len(),
-            1
-        );
-        assert_eq!(
-            rooms_for_scope(rooms, RoomScope::All, "/tmp/current").len(),
-            2
-        );
+        for scope in [serde_json::Value::Null, serde_json::json!("current")] {
+            let args = serde_json::from_value(serde_json::json!({
+                "scope": scope,
+                "workspace": subdir,
+            }))
+            .unwrap();
+            let output = server.list_rooms_inner(args).unwrap();
+            assert_eq!(output.workspace.as_deref(), workspace.to_str());
+            assert_eq!(output.rooms.len(), 1);
+            assert_eq!(output.rooms[0].id, "current");
+        }
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"scope": "current"}),
+            serde_json::json!({"scope": null, "workspace": null}),
+        ] {
+            assert!(
+                server
+                    .list_rooms_inner(serde_json::from_value(value).unwrap())
+                    .is_err()
+            );
+        }
+        for value in [
+            serde_json::json!({"scope": "all"}),
+            serde_json::json!({"scope": "all", "workspace": "relative/missing"}),
+        ] {
+            let output = server
+                .list_rooms_inner(serde_json::from_value(value).unwrap())
+                .unwrap();
+            assert!(output.workspace.is_none());
+            assert_eq!(output.rooms.len(), 2);
+        }
     }
 
     #[test]

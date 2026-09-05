@@ -58,6 +58,68 @@ printf '%s\n' '{"session_id":"native-session","result":"Final answer"}'
 }
 
 #[tokio::test]
+async fn native_git_uses_the_invocation_workspace() {
+    if std::env::var_os("CONFER_TEST_NATIVE_GIT").is_none() {
+        let foreign = tempfile::tempdir().unwrap();
+        let initialized = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(foreign.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .status()
+            .unwrap();
+        assert!(initialized.success());
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "adapters::cli_tests::native_git_uses_the_invocation_workspace",
+                "--nocapture",
+            ])
+            .env("CONFER_TEST_NATIVE_GIT", "1")
+            .env("GIT_DIR", foreign.path().join(".git"))
+            .env("GIT_WORK_TREE", foreign.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("NATIVE_GIT_SCOPE_VERIFIED"));
+        return;
+    }
+    assert!(std::env::var_os("GIT_DIR").is_some());
+    assert!(std::env::var_os("GIT_WORK_TREE").is_some());
+    for agent in AgentKind::ALL {
+        let directory = tempfile::tempdir().unwrap();
+        let initialized = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(directory.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .status()
+            .unwrap();
+        assert!(initialized.success());
+        let invocation = invocation(
+            directory.path(),
+            agent,
+            "git rev-parse --show-toplevel > observed-root\nexit 1",
+        );
+        let output = run(invocation).await;
+        assert!(output.error.is_some());
+        let root = std::fs::read_to_string(directory.path().join("observed-root")).unwrap();
+        assert_eq!(
+            Path::new(root.trim()),
+            directory.path().canonicalize().unwrap(),
+            "{}",
+            agent.id()
+        );
+    }
+    println!("NATIVE_GIT_SCOPE_VERIFIED");
+}
+
+#[tokio::test]
 async fn cli_bridge_does_not_turn_a_failed_result_into_success() {
     let directory = tempfile::tempdir().unwrap();
     let invocation = invocation(

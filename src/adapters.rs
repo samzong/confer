@@ -31,6 +31,17 @@ pub(crate) struct Invocation {
     pub(crate) first_message: bool,
 }
 
+impl Invocation {
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.executable);
+        command
+            .current_dir(&self.workspace)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE");
+        command
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct AdapterOutput {
     pub(crate) observed_session_id: Option<String>,
@@ -365,8 +376,7 @@ fn cursor_config<'a>(
 
 fn build_command(invocation: &Invocation, prompt: &str) -> Result<Command> {
     validate_invocation(invocation)?;
-    let mut command = Command::new(&invocation.executable);
-    command.current_dir(&invocation.workspace);
+    let mut command = invocation.command();
     match invocation.agent {
         AgentKind::Claude => {
             command.args([
