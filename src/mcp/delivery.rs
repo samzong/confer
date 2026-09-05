@@ -10,7 +10,7 @@ use tokio::sync::{Mutex, mpsc, watch};
 use super::ConferMcp;
 use super::api::{SendMessageArgs, WaitOutputArgs, timestamp};
 use crate::adapters::{self, Invocation};
-use crate::state::{StateStore, current_workspace};
+use crate::state::{StateStore, canonical_workspace};
 use crate::types::{AgentKind, RoomRecord, SeatRecord, SeatStatus};
 
 const DEFAULT_WAIT_MS: u64 = 120_000;
@@ -236,15 +236,12 @@ impl ConferMcp {
         if args.message.trim().is_empty() {
             bail!("message must not be empty");
         }
-        let workspace = current_workspace()?;
+        let workspace = canonical_workspace(&args.workspace)?;
         let room = self.store.room_for_workspace(&args.room_id, &workspace)?;
         let seats = resolve_recipients(&room, &args.recipients)?;
         let mut receipts = Vec::new();
         for seat in seats {
-            receipts.push(
-                self.enqueue_delivery(&room, seat, &args.message, workspace.clone())
-                    .await,
-            );
+            receipts.push(self.enqueue_delivery(&room, seat, &args.message).await);
         }
         Ok(SendMessageOutput {
             room_id: room.id,
@@ -257,7 +254,6 @@ impl ConferMcp {
         room: &RoomRecord,
         seat: &SeatRecord,
         message: &str,
-        workspace: PathBuf,
     ) -> SendReceipt {
         let readiness = adapters::check_readiness(seat.agent);
         if !readiness.locally_ready {
@@ -285,7 +281,7 @@ impl ConferMcp {
             room_id: room.id.clone(),
             seat_id: seat.id.clone(),
             message: message.to_string(),
-            workspace,
+            workspace: PathBuf::from(&room.workspace),
         };
         let key = seat_key(&room.id, &seat.id);
         let sender = self.worker_sender(key).await;
@@ -363,7 +359,7 @@ impl ConferMcp {
     }
 
     pub(super) async fn wait_output_inner(&self, args: WaitOutputArgs) -> Result<WaitOutput> {
-        let workspace = current_workspace()?;
+        let workspace = canonical_workspace(&args.workspace)?;
         self.store.room_for_workspace(&args.room_id, &workspace)?;
         let timeout_ms = args.timeout_ms.unwrap_or(DEFAULT_WAIT_MS).min(MAX_WAIT_MS);
         let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
@@ -645,7 +641,7 @@ mod tests {
     };
     use crate::mcp::ConferMcp;
     use crate::mcp::api::WaitOutputArgs;
-    use crate::state::{StateStore, current_workspace};
+    use crate::state::StateStore;
     use crate::types::{AgentKind, HostRecord, RoomRecord, SeatRecord, SeatStatus};
     use std::time::Duration;
 
@@ -692,7 +688,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn wait_output_wakes_on_updates_and_honors_deadline() {
         let directory = tempfile::tempdir().unwrap();
-        let workspace = current_workspace().unwrap();
+        let workspace = directory.path().canonicalize().unwrap();
         let store = StateStore::new(directory.path().join("rooms.json"));
         store
             .mutate(|state| {
@@ -714,9 +710,11 @@ mod tests {
         };
         let started = tokio::time::Instant::now();
         let waiting_server = server.clone();
+        let waiting_workspace = workspace.clone();
         let waiter = tokio::spawn(async move {
             let output = waiting_server
                 .wait_output_inner(WaitOutputArgs {
+                    workspace: waiting_workspace,
                     room_id: "room-1".into(),
                     delivery_ids: vec!["delivery-1".into()],
                     timeout_ms: Some(1_000),
@@ -754,6 +752,7 @@ mod tests {
         let timeout_started = tokio::time::Instant::now();
         let output = server
             .wait_output_inner(WaitOutputArgs {
+                workspace,
                 room_id: "room-1".into(),
                 delivery_ids: vec!["delivery-2".into()],
                 timeout_ms: Some(125),
