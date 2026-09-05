@@ -18,7 +18,7 @@ The supported products can act as external room participants and as MCP hosts:
 | `grok` | Grok Build | `grok` | native `grok mcp` command |
 | `agy` | Antigravity CLI | `agy` | native `agy mcp` command |
 
-MCP is the public protocol. Headless commands and native streaming protocols remain adapter internals.
+MCP is the public protocol. Every seat uses an ACP v1 lifecycle internally. Cursor and Grok use native ACP over stdio; Codex uses an in-process ACP bridge to its app-server; Claude and Antigravity use in-process ACP bridges to their native headless commands. Confer ships one Rust binary and requires no separate bridge runtime.
 
 ## Room model
 
@@ -169,7 +169,9 @@ Every adapter must:
 - extract the final assistant answer from machine-readable output;
 - preserve stderr for actionable errors without leaking credentials, and return native failures without retry or fallback.
 
-Confer owns the FIFO Queue above every adapter. Each queued delivery runs one native agent process and resumes the seat's recorded native session when one exists.
+Confer owns the FIFO Queue above every adapter. Each queued delivery opens one ACP connection, runs one native agent process, and resumes the seat's recorded native session when one exists. Session history replay is excluded from the current answer. After a terminal response, Confer closes the connection and reaps its child; a child that remains alive after three seconds is terminated. There is no idle process pool.
+
+Cursor seats use its ACP session store. Old headless Cursor session IDs are not migrated and require new seats. Other native session stores are not rewritten. An observed session ID remains available when the prompt fails; a missing or stale ID never triggers silent replacement.
 
 Model and reasoning fields are requests to the native CLI. An unsupported value must produce a clear adapter error rather than silently selecting another model.
 
@@ -177,7 +179,7 @@ Model and reasoning fields are requests to the native CLI. An unsupported value 
 
 Confer uses the room workspace as each child process working directory. It does not create filesystem isolation. Independent seats may therefore read or modify the same files even when their messages are isolated.
 
-Confer launches every seat with that agent's full-permission setting so a non-interactive process is never blocked on an approval prompt it cannot answer: Claude and Antigravity receive `--dangerously-skip-permissions`; Codex receives `--dangerously-bypass-approvals-and-sandbox`; Cursor receives `--trust --force`; and Grok receives `--permission-mode bypassPermissions`. Seats therefore run with the same authority as the current host and without sandbox isolation. Explicit task instructions remain the only limit on what a seat is asked to do.
+Confer launches every seat with that agent's full-permission setting so a non-interactive process is never blocked on an approval prompt it cannot answer: Claude and Antigravity receive `--dangerously-skip-permissions`; Codex receives app-server `approvalPolicy: never` and the full-access sandbox policy; Cursor receives `--trust --force`; and Grok receives `--always-approve` and ACP `yoloMode`. Seats therefore run with the same authority as the current host and without sandbox isolation. Explicit task instructions remain the only limit on what a seat is asked to do.
 
 ## Errors
 

@@ -1,7 +1,17 @@
+mod acp;
+#[cfg(test)]
+mod acp_tests;
+mod bridge;
+#[cfg(all(test, unix))]
+mod cli_tests;
+mod codex;
+mod native;
+
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
@@ -58,33 +68,84 @@ pub(crate) fn check_readiness(agent: AgentKind) -> Readiness {
     }
 }
 
-pub(crate) async fn reserve_session(agent: AgentKind, executable: &Path) -> Result<Option<String>> {
+pub(crate) fn reserve_session(agent: AgentKind) -> Option<String> {
     match agent {
-        AgentKind::Claude | AgentKind::Grok => Ok(Some(uuid::Uuid::new_v4().to_string())),
-        AgentKind::Codex | AgentKind::Agy => Ok(None),
-        AgentKind::Cursor => {
-            let output = Command::new(executable)
-                .arg("create-chat")
-                .output()
-                .await
-                .context("failed to create Cursor chat")?;
-            if !output.status.success() {
-                bail!(
-                    "Cursor create-chat failed: {}",
-                    output_summary(&output.stdout, &output.stderr)
-                );
-            }
-            let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if id.is_empty() {
-                bail!("Cursor create-chat returned no chat ID");
-            }
-            Ok(Some(id))
-        }
+        AgentKind::Claude | AgentKind::Grok => Some(uuid::Uuid::new_v4().to_string()),
+        AgentKind::Codex | AgentKind::Cursor | AgentKind::Agy => None,
     }
 }
 
 pub(crate) async fn run(invocation: Invocation) -> AdapterOutput {
-    let mut command = match build_command(&invocation) {
+    if let Err(error) = validate_invocation(&invocation) {
+        return AdapterOutput::failed(error.to_string());
+    }
+    match invocation.agent {
+        AgentKind::Grok | AgentKind::Cursor => native::run(invocation).await,
+        _ => bridge::run(invocation).await,
+    }
+}
+
+impl AdapterOutput {
+    fn failed(error: String) -> Self {
+        Self {
+            observed_session_id: None,
+            answer: None,
+            error: Some(error),
+        }
+    }
+}
+
+async fn reap(
+    child: &mut tokio::process::Child,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    match tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await {
+        Ok(status) => status.map(Some),
+        Err(_) => {
+            child.start_kill()?;
+            child.wait().await?;
+            Ok(None)
+        }
+    }
+}
+
+struct StderrCapture {
+    task: tokio::task::JoinHandle<()>,
+    bytes: Arc<Mutex<Vec<u8>>>,
+}
+
+impl StderrCapture {
+    fn start(mut stderr: impl tokio::io::AsyncRead + Unpin + Send + 'static) -> Self {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let captured = bytes.clone();
+        let task = tokio::spawn(async move {
+            let mut chunk = [0; 8192];
+            while let Ok(count) = stderr.read(&mut chunk).await {
+                if count == 0 {
+                    break;
+                }
+                let mut bytes = captured.lock().expect("stderr capture lock");
+                let excess = (bytes.len() + count).saturating_sub(65536);
+                bytes.drain(..excess);
+                bytes.extend_from_slice(&chunk[..count]);
+            }
+        });
+        Self { task, bytes }
+    }
+
+    async fn finish(mut self) -> Vec<u8> {
+        if tokio::time::timeout(std::time::Duration::from_secs(1), &mut self.task)
+            .await
+            .is_err()
+        {
+            self.task.abort();
+            let _ = self.task.await;
+        }
+        std::mem::take(&mut *self.bytes.lock().expect("stderr capture lock"))
+    }
+}
+
+async fn run_cli(invocation: Invocation, prompt: &str) -> AdapterOutput {
+    let mut command = match build_command(&invocation, prompt) {
         Ok(command) => command,
         Err(error) => {
             return AdapterOutput {
@@ -111,12 +172,7 @@ pub(crate) async fn run(invocation: Invocation) -> AdapterOutput {
         }
     };
     let stdout = child.stdout.take().expect("piped stdout");
-    let mut stderr = child.stderr.take().expect("piped stderr");
-    let stderr_task = tokio::spawn(async move {
-        let mut bytes = Vec::new();
-        let _ = stderr.read_to_end(&mut bytes).await;
-        bytes
-    });
+    let stderr = StderrCapture::start(child.stderr.take().expect("piped stderr"));
     let mut lines = BufReader::new(stdout).lines();
     let mut raw_lines = Vec::new();
     let mut observed_session_id = None;
@@ -151,7 +207,7 @@ pub(crate) async fn run(invocation: Invocation) -> AdapterOutput {
         }
     }
     let status = child.wait().await;
-    let stderr = stderr_task.await.unwrap_or_default();
+    let stderr = stderr.finish().await;
     let stderr = String::from_utf8_lossy(&stderr).trim().to_string();
     let raw = raw_lines.join("\n");
     if !saw_json && let Ok(value) = serde_json::from_str::<Value>(&raw) {
@@ -196,6 +252,13 @@ pub(crate) async fn run(invocation: Invocation) -> AdapterOutput {
             )),
         };
     }
+    if let Some(error) = native_error {
+        return AdapterOutput {
+            observed_session_id,
+            answer: None,
+            error: Some(error_text(&error, &stderr, "")),
+        };
+    }
     let answer = answer
         .or_else(|| (!streamed_text.is_empty()).then_some(streamed_text))
         .or_else(|| {
@@ -217,8 +280,8 @@ pub(crate) async fn run(invocation: Invocation) -> AdapterOutput {
     }
 }
 
-fn build_command(invocation: &Invocation) -> Result<Command> {
-    let prompt = if invocation.first_message {
+fn prompt_text(invocation: &Invocation) -> String {
+    if invocation.first_message {
         match invocation
             .instructions
             .as_deref()
@@ -236,11 +299,60 @@ fn build_command(invocation: &Invocation) -> Result<Command> {
         }
     } else {
         invocation.message.clone()
-    };
-    if prompt.trim().is_empty() {
+    }
+}
+
+fn validate_invocation(invocation: &Invocation) -> Result<()> {
+    if prompt_text(invocation).trim().is_empty() {
         bail!("message must not be empty");
     }
-    validate_effort(invocation.reasoning_effort.as_deref())?;
+    if invocation.agent == AgentKind::Cursor && invocation.reasoning_effort.is_some() {
+        match invocation.model.as_deref() {
+            Some(model) if model.contains('[') => {
+                bail!("Cursor model already encodes options; omit reasoning_effort")
+            }
+            None => bail!("Cursor reasoning_effort requires an explicit model"),
+            _ => {}
+        }
+    }
+    if invocation.agent == AgentKind::Cursor {
+        cursor_config(invocation)?;
+    }
+    validate_effort(invocation.reasoning_effort.as_deref())
+}
+
+fn cursor_config(invocation: &Invocation) -> Result<Vec<(&str, &str)>> {
+    let mut options = Vec::new();
+    if let Some(model) = invocation.model.as_deref() {
+        if let Some((base, parameters)) = model.split_once('[') {
+            let Some(parameters) = parameters.strip_suffix(']') else {
+                bail!("invalid Cursor model options");
+            };
+            if base.is_empty() {
+                bail!("Cursor model must not be empty");
+            }
+            options.push(("model", base));
+            for parameter in parameters.split(',') {
+                let Some((name, value)) = parameter.split_once('=') else {
+                    bail!("invalid Cursor model option");
+                };
+                if name.is_empty() || value.is_empty() {
+                    bail!("invalid Cursor model option");
+                }
+                options.push((name, value));
+            }
+        } else {
+            options.push(("model", model));
+        }
+    }
+    if let Some(effort) = invocation.reasoning_effort.as_deref() {
+        options.push(("effort", effort));
+    }
+    Ok(options)
+}
+
+fn build_command(invocation: &Invocation, prompt: &str) -> Result<Command> {
+    validate_invocation(invocation)?;
     let mut command = Command::new(&invocation.executable);
     command.current_dir(&invocation.workspace);
     match invocation.agent {
@@ -267,83 +379,10 @@ fn build_command(invocation: &Invocation) -> Result<Command> {
             }
             command.arg(prompt);
         }
-        AgentKind::Codex => {
-            command.arg("exec");
-            if invocation.first_message {
-                command.args(["--json", "-C"]).arg(&invocation.workspace);
-            } else {
-                let id = invocation
-                    .native_session_id
-                    .as_deref()
-                    .context("Codex resume requires a native session ID")?;
-                command.args(["resume", "--json", id]);
-            }
-            command.arg("--dangerously-bypass-approvals-and-sandbox");
-            if let Some(model) = &invocation.model {
-                command.args(["--model", model]);
-            }
-            if let Some(effort) = &invocation.reasoning_effort {
-                command.args(["-c", &format!("model_reasoning_effort=\"{effort}\"")]);
-            }
-            command.arg(prompt);
-        }
-        AgentKind::Cursor => {
-            let id = invocation
-                .native_session_id
-                .as_deref()
-                .context("Cursor requires a native chat ID")?;
-            command.args([
-                "-p",
-                "--output-format",
-                "stream-json",
-                "--trust",
-                "--force",
-                "--resume",
-                id,
-            ]);
-            command.arg("--workspace").arg(&invocation.workspace);
-            match (&invocation.model, &invocation.reasoning_effort) {
-                (Some(model), Some(effort)) if !model.contains('[') => {
-                    command.args(["--model", &format!("{model}[effort={effort}]")]);
-                }
-                (Some(model), Some(_)) => {
-                    bail!("Cursor model '{model}' already encodes options; omit reasoning_effort")
-                }
-                (Some(model), None) => {
-                    command.args(["--model", model]);
-                }
-                (None, Some(_)) => bail!("Cursor reasoning_effort requires an explicit model"),
-                (None, None) => {}
-            }
-            command.arg(prompt);
-        }
-        AgentKind::Grok => {
-            command.args([
-                "--output-format",
-                "streaming-json",
-                "--permission-mode",
-                "bypassPermissions",
-            ]);
-            command.arg("--cwd").arg(&invocation.workspace);
-            if let Some(id) = &invocation.native_session_id {
-                command.args(if invocation.first_message {
-                    ["--session-id", id.as_str()]
-                } else {
-                    ["--resume", id.as_str()]
-                });
-            }
-            if let Some(model) = &invocation.model {
-                command.args(["--model", model]);
-            }
-            if let Some(effort) = &invocation.reasoning_effort {
-                command.args(["--reasoning-effort", effort]);
-            }
-            command.args(["-p", &prompt]);
-        }
         AgentKind::Agy => {
             command.args([
                 "-p",
-                &prompt,
+                prompt,
                 "--output-format",
                 "json",
                 "--disable-slash-commands",
@@ -364,6 +403,9 @@ fn build_command(invocation: &Invocation) -> Result<Command> {
                 }
                 command.args(["--effort", effort]);
             }
+        }
+        AgentKind::Codex | AgentKind::Grok | AgentKind::Cursor => {
+            bail!("agent requires its ACP transport")
         }
     }
     Ok(command)
@@ -535,6 +577,22 @@ fn extract_answer(value: &Value) -> Option<String> {
 fn extract_native_error(value: &Value) -> Option<String> {
     let object = value.as_object()?;
     let kind = object.get("type").and_then(Value::as_str);
+    if kind == Some("result") && object.get("is_error").and_then(Value::as_bool) == Some(true) {
+        let errors = object
+            .get("errors")
+            .and_then(Value::as_array)
+            .map(|errors| {
+                errors
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .filter(|errors| !errors.is_empty());
+        return errors
+            .or_else(|| object.get("result").and_then(extract_text))
+            .or_else(|| Some("native agent reported a failed result".into()));
+    }
     if kind != Some("error") && !object.contains_key("error") {
         return None;
     }
@@ -576,16 +634,6 @@ fn append_streamed_text(value: &Value, output: &mut String) {
         && let Some(text) = object.get("data").and_then(Value::as_str)
     {
         output.push_str(text);
-    }
-}
-
-fn output_summary(stdout: &[u8], stderr: &[u8]) -> String {
-    let stderr = String::from_utf8_lossy(stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(stdout).trim().to_string();
-    if !stderr.is_empty() {
-        truncate(&redact_secrets(&stderr))
-    } else {
-        truncate(&redact_secrets(&stdout))
     }
 }
 
@@ -725,7 +773,7 @@ mod tests {
             message: "test".into(),
             first_message: false,
         };
-        assert!(build_command(&invocation).is_err());
+        assert!(super::validate_invocation(&invocation).is_err());
     }
 
     #[test]
@@ -741,7 +789,7 @@ mod tests {
             message: "Analyze this".into(),
             first_message: true,
         };
-        let command = build_command(&first).unwrap();
+        let command = build_command(&first, &super::prompt_text(&first)).unwrap();
         let debug = format!("{command:?}");
         assert!(debug.contains("--add-dir"));
         assert!(debug.contains("/workspace"));
@@ -763,7 +811,7 @@ mod tests {
             message: "Next step".into(),
             first_message: false,
         };
-        let command = build_command(&resume).unwrap();
+        let command = build_command(&resume, &super::prompt_text(&resume)).unwrap();
         let debug = format!("{command:?}");
         assert!(debug.contains("--conversation"));
         assert!(debug.contains("conv-456"));
@@ -779,7 +827,7 @@ mod tests {
             message: "Next step".into(),
             first_message: false,
         };
-        assert!(build_command(&invalid_resume).is_err());
+        assert!(build_command(&invalid_resume, &super::prompt_text(&invalid_resume)).is_err());
 
         let invalid_effort = Invocation {
             agent: AgentKind::Agy,
@@ -792,6 +840,6 @@ mod tests {
             message: "Analyze this".into(),
             first_message: true,
         };
-        assert!(build_command(&invalid_effort).is_err());
+        assert!(build_command(&invalid_effort, &super::prompt_text(&invalid_effort)).is_err());
     }
 }

@@ -491,28 +491,10 @@ async fn process_queued_delivery(
         }
     };
     let reserved = if first_message {
-        match adapters::reserve_session(seat.agent, &executable).await {
-            Ok(session) => session,
-            Err(error) => {
-                deliveries
-                    .set_failed(&queued.delivery_id, error.to_string())
-                    .await;
-                return;
-            }
-        }
+        adapters::reserve_session(seat.agent)
     } else {
         seat.native_session_id.clone()
     };
-    if first_message
-        && seat.agent == AgentKind::Cursor
-        && let Err(error) =
-            persist_native_session(store, &queued.room_id, &queued.seat_id, reserved.as_deref())
-    {
-        deliveries
-            .set_failed(&queued.delivery_id, error.to_string())
-            .await;
-        return;
-    }
     let invocation = Invocation {
         agent: seat.agent,
         executable,
