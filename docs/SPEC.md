@@ -42,7 +42,7 @@ Each external seat has these optional selection fields:
 }
 ```
 
-`name` is a room address, not a built-in role. `instructions` are visible only to that seat and remain part of its native session context. Confer generates a unique seat name when none is supplied.
+`name` is a room address, not a built-in role. `instructions` are visible only to that seat. Every delivery includes those stable instructions and the current message, including when resuming a session whose first prompt failed. A recorded native session ID does not imply that instructions were delivered. Confer generates a unique seat name when none is supplied.
 
 Rooms have no lifecycle status, automatic expiration, or garbage collection. A persisted room remains addressable by ID in its workspace. Starting a new room does not change or delete earlier rooms.
 

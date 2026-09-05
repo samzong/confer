@@ -281,29 +281,25 @@ async fn run_cli(invocation: Invocation, prompt: &str) -> AdapterOutput {
 }
 
 fn prompt_text(invocation: &Invocation) -> String {
-    if invocation.first_message {
-        match invocation
-            .instructions
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            Some(instructions) => format!(
-                "Do not call Confer MCP tools. Respond directly to the room host.\n\n{instructions}\n\n{}",
-                invocation.message
-            ),
-            None => format!(
-                "Do not call Confer MCP tools. Respond directly to the room host.\n\n{}",
-                invocation.message
-            ),
-        }
-    } else {
-        invocation.message.clone()
+    match invocation
+        .instructions
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(instructions) => format!(
+            "Do not call Confer MCP tools. Respond directly to the room host.\n\n{instructions}\n\n{}",
+            invocation.message
+        ),
+        None => format!(
+            "Do not call Confer MCP tools. Respond directly to the room host.\n\n{}",
+            invocation.message
+        ),
     }
 }
 
 fn validate_invocation(invocation: &Invocation) -> Result<()> {
-    if prompt_text(invocation).trim().is_empty() {
+    if invocation.message.trim().is_empty() {
         bail!("message must not be empty");
     }
     if invocation.agent == AgentKind::Cursor && invocation.reasoning_effort.is_some() {

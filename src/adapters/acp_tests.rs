@@ -44,7 +44,7 @@ fn invocation(first_message: bool) -> Invocation {
         native_session_id: Some("native-session".into()),
         model: None,
         reasoning_effort: None,
-        instructions: None,
+        instructions: Some("Review without editing files".into()),
         message: "current request".into(),
         first_message,
     }
@@ -72,6 +72,8 @@ async fn run_script(
     let new_calls = calls.clone();
     let load_calls = calls.clone();
     let prompt_calls = calls.clone();
+    let expected_message = invocation.message.clone();
+    let expected_instructions = invocation.instructions.clone();
     let (client, server) = Channel::duplex();
     let server = tokio::spawn(async move {
         Agent
@@ -108,6 +110,18 @@ async fn run_script(
             .on_receive_request(
                 async move |request: PromptRequest, responder, cx| {
                     prompt_calls.lock().unwrap().push("prompt");
+                    let text = request
+                        .prompt
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::Text(text) => Some(text.text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<String>();
+                    assert!(text.contains(&expected_message));
+                    if let Some(instructions) = &expected_instructions {
+                        assert!(text.contains(instructions));
+                    }
                     let permissions = script.permissions.clone();
                     let updates = script.updates.clone();
                     let response = script.response.clone();

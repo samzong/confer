@@ -25,7 +25,7 @@ fn invocation(directory: &Path, agent: AgentKind, script: &str) -> Invocation {
 async fn cli_bridge_preserves_native_identity_and_prompt() {
     for agent in [AgentKind::Claude, AgentKind::Agy] {
         let directory = tempfile::tempdir().unwrap();
-        let invocation = invocation(
+        let mut invocation = invocation(
             directory.path(),
             agent,
             r#"
@@ -33,7 +33,7 @@ printf '%s\n' "$@" > arguments
 printf '%s\n' '{"session_id":"native-session","result":"Final answer"}'
 "#,
         );
-        let output = run(invocation).await;
+        let output = run(invocation.clone()).await;
         assert_eq!(
             output.observed_session_id.as_deref(),
             Some("native-session")
@@ -42,6 +42,18 @@ printf '%s\n' '{"session_id":"native-session","result":"Final answer"}'
         assert!(output.error.is_none(), "{output:?}");
         let arguments = std::fs::read_to_string(directory.path().join("arguments")).unwrap();
         assert!(arguments.contains("Private seat instructions\n\nCurrent task"));
+        invocation.first_message = false;
+        invocation.native_session_id = output.observed_session_id;
+        invocation.message = "Follow-up task".into();
+        let output = run(invocation).await;
+        assert!(output.error.is_none(), "{output:?}");
+        assert_eq!(
+            output.observed_session_id.as_deref(),
+            Some("native-session")
+        );
+        let arguments = std::fs::read_to_string(directory.path().join("arguments")).unwrap();
+        assert!(arguments.contains("Private seat instructions\n\nFollow-up task"));
+        assert!(!arguments.contains("Current task"));
     }
 }
 
