@@ -71,6 +71,8 @@ Room metadata writes use a short advisory lock and atomic replacement. Current w
 
 Readiness checks are local and run when a room is created, when a seat is added, and before each delivery starts. They inspect the executable and local authentication or configuration state without calling a model or checking quota. A positive result means `locally_ready`; it does not guarantee provider availability, model access, or remaining quota.
 
+Creation and seat addition validate the final selected agent's deterministic configuration before saving any room change. Delivery uses the same validation. Malformed Cursor model options, conflicting option sources, and unsupported local effort values fail immediately. Model availability and provider-specific capabilities remain native runtime checks. Cursor accepts `reasoning_effort` without `model` and applies it to its configured default model; a default that does not support that effort returns a native error.
+
 The current host, guided by the Skill, normally selects seat specifications from the task. Explicit user choices take precedence. When the host supplies no seats, Confer fills the requested size from locally ready supported agents.
 
 If a requested participant is unavailable, Confer may replace it with another locally ready supported agent. The response must report the requested seat, replacement, and reason. A logical seat survives replacement and keeps its name and authorized room view. A replacement never receives another seat’s private messages or replies.

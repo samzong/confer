@@ -237,12 +237,15 @@ fn select_seats_with_names(
                 reason: "requested agent is not locally ready".into(),
             });
         }
+        let model = (!replaced).then_some(spec.model).flatten();
+        let reasoning_effort = (!replaced).then_some(spec.reasoning_effort).flatten();
+        adapters::validate_seat_config(selected, model.as_deref(), reasoning_effort.as_deref())?;
         seats.push(SeatRecord {
             id: uuid::Uuid::new_v4().to_string(),
             name,
             agent: selected,
-            model: (!replaced).then_some(spec.model).flatten(),
-            reasoning_effort: (!replaced).then_some(spec.reasoning_effort).flatten(),
+            model,
+            reasoning_effort,
             instructions: spec.instructions,
             native_session_id: None,
             status: SeatStatus::Active,
@@ -394,6 +397,39 @@ mod tests {
         .unwrap();
 
         assert_eq!(replacements[0].seat_name, seats[0].name);
+    }
+
+    #[test]
+    fn seat_selection_validates_the_final_agent_configuration() {
+        for (agent, model, effort) in [
+            (AgentKind::Cursor, Some("model[effort=high]"), Some("high")),
+            (AgentKind::Cursor, Some("model[effort"), None),
+            (AgentKind::Claude, None, Some("invalid")),
+            (AgentKind::Agy, None, Some("xhigh")),
+        ] {
+            let request = SeatSpecInput {
+                agent: Some(agent.id().into()),
+                model: model.map(str::to_owned),
+                reasoning_effort: effort.map(str::to_owned),
+                name: None,
+                instructions: None,
+            };
+            assert!(select_seats(vec![request], 1, None, &[ready(agent)]).is_err());
+        }
+        let request = SeatSpecInput {
+            agent: Some("cursor".into()),
+            model: Some("model[effort".into()),
+            reasoning_effort: Some("invalid".into()),
+            name: None,
+            instructions: Some("Review only".into()),
+        };
+        let (seats, replacements) =
+            select_seats(vec![request], 1, None, &[ready(AgentKind::Claude)]).unwrap();
+        assert_eq!(replacements.len(), 1);
+        assert_eq!(seats[0].agent, AgentKind::Claude);
+        assert!(seats[0].model.is_none());
+        assert!(seats[0].reasoning_effort.is_none());
+        assert_eq!(seats[0].instructions.as_deref(), Some("Review only"));
     }
 
     #[tokio::test]

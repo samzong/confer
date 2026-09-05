@@ -302,24 +302,40 @@ fn validate_invocation(invocation: &Invocation) -> Result<()> {
     if invocation.message.trim().is_empty() {
         bail!("message must not be empty");
     }
-    if invocation.agent == AgentKind::Cursor && invocation.reasoning_effort.is_some() {
-        match invocation.model.as_deref() {
-            Some(model) if model.contains('[') => {
-                bail!("Cursor model already encodes options; omit reasoning_effort")
-            }
-            None => bail!("Cursor reasoning_effort requires an explicit model"),
-            _ => {}
-        }
-    }
-    if invocation.agent == AgentKind::Cursor {
-        cursor_config(invocation)?;
-    }
-    validate_effort(invocation.reasoning_effort.as_deref())
+    validate_seat_config(
+        invocation.agent,
+        invocation.model.as_deref(),
+        invocation.reasoning_effort.as_deref(),
+    )
 }
 
-fn cursor_config(invocation: &Invocation) -> Result<Vec<(&str, &str)>> {
+pub(crate) fn validate_seat_config(
+    agent: AgentKind,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Result<()> {
+    validate_effort(effort)?;
+    if agent == AgentKind::Agy
+        && let Some(effort) = effort
+        && !["low", "medium", "high"].contains(&effort)
+    {
+        bail!("unsupported Antigravity reasoning_effort '{effort}'");
+    }
+    if agent == AgentKind::Cursor {
+        cursor_config(model, effort)?;
+    }
+    Ok(())
+}
+
+fn cursor_config<'a>(
+    model: Option<&'a str>,
+    effort: Option<&'a str>,
+) -> Result<Vec<(&'a str, &'a str)>> {
+    if effort.is_some() && model.is_some_and(|model| model.contains('[')) {
+        bail!("Cursor model already encodes options; omit reasoning_effort");
+    }
     let mut options = Vec::new();
-    if let Some(model) = invocation.model.as_deref() {
+    if let Some(model) = model {
         if let Some((base, parameters)) = model.split_once('[') {
             let Some(parameters) = parameters.strip_suffix(']') else {
                 bail!("invalid Cursor model options");
@@ -341,7 +357,7 @@ fn cursor_config(invocation: &Invocation) -> Result<Vec<(&str, &str)>> {
             options.push(("model", model));
         }
     }
-    if let Some(effort) = invocation.reasoning_effort.as_deref() {
+    if let Some(effort) = effort {
         options.push(("effort", effort));
     }
     Ok(options)
@@ -394,9 +410,6 @@ fn build_command(invocation: &Invocation, prompt: &str) -> Result<Command> {
                 command.args(["--model", model]);
             }
             if let Some(effort) = &invocation.reasoning_effort {
-                if !["low", "medium", "high"].contains(&effort.as_str()) {
-                    bail!("unsupported Antigravity reasoning_effort '{effort}'");
-                }
                 command.args(["--effort", effort]);
             }
         }

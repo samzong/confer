@@ -401,57 +401,66 @@ async fn grok_effort_uses_the_model_from_legacy_new_and_resume_responses() {
 
 #[tokio::test]
 async fn cursor_negotiates_parameterized_model_configuration() {
-    let mut invocation = invocation(true);
-    invocation.model = Some("cursor-model[effort=high]".into());
-    let (client, server) = Channel::duplex();
-    let parameterized = Arc::new(Mutex::new(false));
-    let configured = Arc::new(Mutex::new(Vec::new()));
-    let server = tokio::spawn(async move {
-        Agent
-            .builder()
-            .on_receive_request(
-                async move |request: UntypedMessage, responder, cx| {
-                    let params = request.params();
-                    match request.method() {
-                        "initialize" => {
-                            *parameterized.lock().unwrap() = params
-                                .pointer("/clientCapabilities/_meta/parameterizedModelPicker")
-                                .and_then(serde_json::Value::as_bool)
-                                == Some(true);
-                            responder.respond(json!({"protocolVersion":1,"agentCapabilities":{}}))
-                        }
-                        "session/new" => responder.respond(json!({"sessionId":"native-session"})),
-                        "session/set_config_option" => {
-                            if !*parameterized.lock().unwrap() {
-                                return responder.respond_with_error(Error::invalid_params());
+    for model in [None, Some("cursor-model[effort=high]")] {
+        let mut invocation = invocation(true);
+        invocation.model = model.map(str::to_owned);
+        invocation.reasoning_effort = model.is_none().then(|| "high".into());
+        super::validate_invocation(&invocation).unwrap();
+        let expected = if model.is_some() {
+            vec![
+                (json!("model"), json!("cursor-model")),
+                (json!("effort"), json!("high")),
+            ]
+        } else {
+            vec![(json!("effort"), json!("high"))]
+        };
+        let (client, server) = Channel::duplex();
+        let parameterized = Arc::new(Mutex::new(false));
+        let configured = Arc::new(Mutex::new(Vec::new()));
+        let server = tokio::spawn(async move {
+            Agent
+                .builder()
+                .on_receive_request(
+                    async move |request: UntypedMessage, responder, cx| {
+                        let params = request.params();
+                        match request.method() {
+                            "initialize" => {
+                                *parameterized.lock().unwrap() = params
+                                    .pointer("/clientCapabilities/_meta/parameterizedModelPicker")
+                                    .and_then(serde_json::Value::as_bool)
+                                    == Some(true);
+                                responder
+                                    .respond(json!({"protocolVersion":1,"agentCapabilities":{}}))
                             }
-                            configured
-                                .lock()
-                                .unwrap()
-                                .push((params["configId"].clone(), params["value"].clone()));
-                            responder.respond(json!({"configOptions":[]}))
+                            "session/new" => {
+                                responder.respond(json!({"sessionId":"native-session"}))
+                            }
+                            "session/set_config_option" => {
+                                if !*parameterized.lock().unwrap() {
+                                    return responder.respond_with_error(Error::invalid_params());
+                                }
+                                configured
+                                    .lock()
+                                    .unwrap()
+                                    .push((params["configId"].clone(), params["value"].clone()));
+                                responder.respond(json!({"configOptions":[]}))
+                            }
+                            "session/prompt" => {
+                                assert_eq!(*configured.lock().unwrap(), expected);
+                                cx.send_notification(message("configured answer"))?;
+                                responder.respond(json!({"stopReason":"end_turn"}))
+                            }
+                            _ => responder.respond_with_error(Error::method_not_found()),
                         }
-                        "session/prompt" => {
-                            assert_eq!(
-                                *configured.lock().unwrap(),
-                                vec![
-                                    (json!("model"), json!("cursor-model")),
-                                    (json!("effort"), json!("high"))
-                                ]
-                            );
-                            cx.send_notification(message("configured answer"))?;
-                            responder.respond(json!({"stopReason":"end_turn"}))
-                        }
-                        _ => responder.respond_with_error(Error::method_not_found()),
-                    }
-                },
-                agent_client_protocol::on_receive_request!(),
-            )
-            .connect_to(server)
-            .await
-    });
-    let output = acp::run_connection(client, invocation, true).await;
-    assert!(output.error.is_none(), "{output:?}");
-    assert_eq!(output.answer.as_deref(), Some("configured answer"));
-    server.await.unwrap().unwrap();
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .connect_to(server)
+                .await
+        });
+        let output = acp::run_connection(client, invocation, true).await;
+        assert!(output.error.is_none(), "{output:?}");
+        assert_eq!(output.answer.as_deref(), Some("configured answer"));
+        server.await.unwrap().unwrap();
+    }
 }
