@@ -9,12 +9,12 @@ Perform an author-side, read-only product audit. Analyze Confer itself; do not c
 
 ## Evidence Boundary
 
-Read `~/.confer/rooms.json` directly. Do not use Recall or participant transcripts unless the user explicitly expands the audit to conversation content. The saved file is the evidence for what Confer itself can preserve and expose.
+Read `rooms.json` under `$XDG_STATE_HOME/confer` directly, using `~/.local/state/confer` when `XDG_STATE_HOME` is unset, empty, or relative. Do not use Recall or participant transcripts unless the user explicitly expands the audit to conversation content. The saved file is the evidence for what Confer itself can preserve and expose.
 
 Before drawing conclusions:
 
 1. Reconcile the repository with `git status --short --branch` and recent `git log`.
-2. Run `jq -f <skill-directory>/scripts/summarize-rooms.jq ~/.confer/rooms.json`.
+2. Resolve the state directory above and run `jq -f <skill-directory>/scripts/summarize-rooms.jq <state-directory>/rooms.json`.
 3. Inspect the raw records needed to understand names, instructions, lifecycle, requested model settings, and native-session presence. Do not reproduce full native session IDs or unrelated private instructions in the report.
 4. Compare the observed pattern with the live contract in `docs/SPEC.md`, `README.md`, `src/types.rs`, `src/state.rs`, `src/mcp.rs`, `src/adapters.rs`, and `skills/confer/SKILL.md`.
 5. When installed behavior matters, inspect `confer mcp capabilities` and clearly distinguish the installed binary from the current checkout.

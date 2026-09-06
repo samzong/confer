@@ -55,9 +55,12 @@ Rooms have no lifecycle status, automatic expiration, or garbage collection. A p
 Confer stores disposable room metadata and advisory seat lease files:
 
 ```text
-~/.confer/rooms.json
-~/.confer/seat-locks/*.lock
+$XDG_STATE_HOME/confer/rooms.json
+$XDG_STATE_HOME/confer/rooms.json.lock
+$XDG_STATE_HOME/confer/seat-locks/*.lock
 ```
+
+On macOS and Linux, `XDG_STATE_HOME` must be an absolute path. An unset, empty, or relative value falls back to `~/.local/state`. The legacy `~/.confer` directory is neither read nor migrated; existing files remain untouched. Restart all Confer MCP processes after upgrading. Native agent sessions remain in their original stores.
 
 `rooms.json` contains a schema version and room records with:
 
