@@ -104,7 +104,8 @@
 
   <rect x="1030" y="192" width="220" height="176" rx="12" class="box" fill="#f6edf8" stroke="#8d58c7"/>
   <text x="1048" y="219" class="headingSmall">Durable room map</text>
-  <text x="1048" y="245" class="mono">~/.confer/rooms.json</text>
+  <text x="1048" y="241" class="mono">$XDG_STATE_HOME/</text>
+  <text x="1048" y="257" class="mono">confer/rooms.json</text>
   <text x="1048" y="275" class="body">room + seat metadata</text>
   <text x="1048" y="295" class="body">selection + native session IDs</text>
   <text x="1048" y="325" class="mono">no messages · no transcripts</text>

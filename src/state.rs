@@ -27,8 +27,12 @@ impl Drop for SeatLease {
 
 impl StateStore {
     pub(crate) fn discover() -> Result<Self> {
-        let home = dirs::home_dir().context("cannot determine home directory")?;
-        Ok(Self::new(home.join(".confer").join("rooms.json")))
+        let root = std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))
+            .context("cannot determine state directory")?;
+        Ok(Self::new(root.join("confer").join("rooms.json")))
     }
 
     pub(crate) fn new(path: PathBuf) -> Self {
@@ -216,6 +220,52 @@ pub(crate) fn normalize_workspace(path: &Path) -> Result<PathBuf> {
 mod tests {
     use super::{StateStore, canonical_workspace, normalize_workspace};
     use crate::types::{HostRecord, RoomRecord, SeatStatus};
+
+    #[test]
+    fn discovered_state_persists_under_xdg() {
+        if let Some(root) = std::env::var_os("CONFER_TEST_STATE_ROOT") {
+            let root = std::path::PathBuf::from(root).join("confer");
+            let store = StateStore::discover().unwrap();
+            store.mutate(|_| Ok(())).unwrap();
+            assert_eq!(store.path(), root.join("rooms.json"));
+            let persisted: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(store.path()).unwrap()).unwrap();
+            assert_eq!(persisted["schema_version"], 3);
+            let lease = store.try_acquire_seat_lease("room", "seat").unwrap();
+            let reopened = StateStore::discover().unwrap();
+            assert!(reopened.try_acquire_seat_lease("room", "seat").is_err());
+            drop(lease);
+            assert!(reopened.try_acquire_seat_lease("room", "seat").is_ok());
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        let custom = home.join("custom state");
+        for xdg in [None, Some(""), Some("relative/state"), custom.to_str()] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "state::tests::discovered_state_persists_under_xdg",
+                ])
+                .env("HOME", &home)
+                .env_remove("XDG_STATE_HOME")
+                .env(
+                    "CONFER_TEST_STATE_ROOT",
+                    if xdg == custom.to_str() {
+                        custom.clone()
+                    } else {
+                        home.join(".local/state")
+                    },
+                );
+            if let Some(xdg) = xdg {
+                command.env("XDG_STATE_HOME", xdg);
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+        }
+    }
 
     #[test]
     fn cache_round_trip_preserves_rooms() {
