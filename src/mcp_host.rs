@@ -25,6 +25,7 @@ enum HostCommandOutcome {
 pub(crate) fn install(agents: &[String], dry_run: bool, bin: Option<PathBuf>) -> Result<()> {
     run_hosts(
         resolve_hosts(agents)?,
+        agents,
         dry_run,
         HostAction::Install {
             bin: resolve_bin(bin)?,
@@ -33,7 +34,12 @@ pub(crate) fn install(agents: &[String], dry_run: bool, bin: Option<PathBuf>) ->
 }
 
 pub(crate) fn uninstall(agents: &[String], dry_run: bool) -> Result<()> {
-    run_hosts(resolve_hosts(agents)?, dry_run, HostAction::Uninstall)
+    run_hosts(
+        resolve_hosts(agents)?,
+        agents,
+        dry_run,
+        HostAction::Uninstall,
+    )
 }
 
 fn resolve_hosts(agents: &[String]) -> Result<Vec<AgentKind>> {
@@ -148,15 +154,22 @@ fn remove_args(host: AgentKind) -> Option<Vec<String>> {
     }
 }
 
-fn run_hosts(hosts: Vec<AgentKind>, dry_run: bool, action: HostAction) -> Result<()> {
+fn run_hosts(
+    hosts: Vec<AgentKind>,
+    agents: &[String],
+    dry_run: bool,
+    action: HostAction,
+) -> Result<()> {
+    let discover = agents.is_empty() || agents.iter().any(|agent| agent.trim() == "*");
     let mut changed = 0usize;
     let mut errors = Vec::new();
     for host in hosts {
-        let Some(program) = host_program(host) else {
+        let program = host_program(host);
+        if program.is_none() && (discover || host != AgentKind::Cursor) {
             eprintln!("skipped {}: executable is not on PATH", host.id());
             continue;
-        };
-        match apply_host(host, &program, dry_run, &action) {
+        }
+        match apply_host(host, program.as_deref(), dry_run, &action) {
             Ok(()) => changed += 1,
             Err(error) => errors.push(error),
         }
@@ -182,10 +195,16 @@ fn run_hosts(hosts: Vec<AgentKind>, dry_run: bool, action: HostAction) -> Result
     }
 }
 
-fn apply_host(host: AgentKind, program: &str, dry_run: bool, action: &HostAction) -> Result<()> {
+fn apply_host(
+    host: AgentKind,
+    program: Option<&str>,
+    dry_run: bool,
+    action: &HostAction,
+) -> Result<()> {
     match action {
         HostAction::Install { bin } => match add_args(host, bin) {
             Some(args) => {
+                let program = program.context("MCP host executable is not on PATH")?;
                 if matches!(
                     run_host_command(program, &args, dry_run, false)?,
                     HostCommandOutcome::AlreadyExists
@@ -219,6 +238,7 @@ fn apply_host(host: AgentKind, program: &str, dry_run: bool, action: &HostAction
         },
         HostAction::Uninstall => match remove_args(host) {
             Some(args) => {
+                let program = program.context("MCP host executable is not on PATH")?;
                 run_host_command(program, &args, dry_run, true)?;
                 Ok(())
             }
@@ -497,12 +517,115 @@ mod tests {
         let config = read_cursor_config(&path).unwrap();
         assert_eq!(config["mcpServers"]["other"]["command"], "other");
         assert_eq!(config["mcpServers"]["confer"]["env"]["A"], "B");
+        assert_eq!(config["mcpServers"]["confer"]["type"], "stdio");
+        assert_eq!(config["mcpServers"]["confer"]["command"], "/tmp/confer");
+        assert_eq!(
+            config["mcpServers"]["confer"]["args"],
+            serde_json::json!(["mcp"])
+        );
         remove_cursor_config(&path).unwrap();
+        assert_eq!(
+            read_cursor_config(&path).unwrap()["mcpServers"]["other"]["command"],
+            "other"
+        );
         assert!(
             read_cursor_config(&path).unwrap()["mcpServers"]
                 .get("confer")
                 .is_none()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cursor_registration_without_cli_requires_explicit_selection() {
+        if std::env::var_os("CONFER_TEST_CURSOR_REGISTRATION").is_none() {
+            let dir = tempfile::Builder::new()
+                .prefix("confer-registration-test-")
+                .tempdir()
+                .unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "mcp_host::tests::cursor_registration_without_cli_requires_explicit_selection",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env("CONFER_TEST_CURSOR_REGISTRATION", dir.path())
+                .env("TMPDIR", dir.path().parent().unwrap())
+                .env("HOME", dir.path())
+                .env("PATH", dir.path())
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(dir.path().join(".cursor/mcp.json").is_file());
+            return;
+        }
+
+        let isolated =
+            std::path::PathBuf::from(std::env::var_os("CONFER_TEST_CURSOR_REGISTRATION").unwrap());
+        assert!(isolated.is_absolute());
+        assert_eq!(std::env::var_os("PATH").unwrap(), isolated.as_os_str());
+        let isolated = isolated.canonicalize().unwrap();
+        assert_eq!(
+            isolated.parent().unwrap(),
+            std::env::temp_dir().canonicalize().unwrap()
+        );
+        assert!(
+            isolated
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("confer-registration-test-")
+        );
+        assert_eq!(dirs::home_dir().unwrap().canonicalize().unwrap(), isolated);
+        assert_eq!(
+            std::env::current_dir().unwrap().canonicalize().unwrap(),
+            isolated
+        );
+        let path = super::cursor_config_path().unwrap();
+        let agents = ["cursor".into()];
+        for dry_run in [true, false] {
+            for selection in [vec![], vec!["*".into()], vec!["cursor".into(), "*".into()]] {
+                assert!(super::install(&selection, dry_run, None).is_err());
+                assert!(super::uninstall(&selection, dry_run).is_err());
+                assert!(!path.exists());
+            }
+            for host in AgentKind::ALL {
+                if host != AgentKind::Cursor {
+                    assert!(super::install(&[host.id().into()], dry_run, None).is_err());
+                    assert!(super::uninstall(&[host.id().into()], dry_run).is_err());
+                }
+            }
+            assert!(super::install(&agents, dry_run, Some(path.clone())).is_err());
+            assert!(!path.exists());
+        }
+
+        super::install(&agents, true, None).unwrap();
+        super::uninstall(&agents, true).unwrap();
+        super::uninstall(&agents, false).unwrap();
+        assert!(!path.exists());
+        super::install(&agents, false, None).unwrap();
+        assert_eq!(
+            read_cursor_config(&path).unwrap()["mcpServers"]["confer"]["command"],
+            "confer"
+        );
+        let installed = std::fs::read(&path).unwrap();
+        super::install(&agents, true, Some("other-bin".into())).unwrap();
+        super::uninstall(&agents, true).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), installed);
+        super::uninstall(&agents, false).unwrap();
+        assert!(
+            read_cursor_config(&path).unwrap()["mcpServers"]
+                .get("confer")
+                .is_none()
+        );
+        assert!(!crate::adapters::check_readiness(AgentKind::Cursor).locally_ready);
     }
 
     #[test]

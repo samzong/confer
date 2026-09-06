@@ -3,7 +3,7 @@ use std::process::Stdio;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{ChildStdin, ChildStdout, Command};
+use tokio::process::{ChildStdin, ChildStdout};
 
 use super::{AdapterOutput, Invocation, error_text};
 
@@ -206,10 +206,9 @@ impl Connection {
 }
 
 pub(super) async fn run(invocation: Invocation, prompt: &str) -> AdapterOutput {
-    let mut command = Command::new(&invocation.executable);
+    let mut command = invocation.command();
     command
         .arg("app-server")
-        .current_dir(&invocation.workspace)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

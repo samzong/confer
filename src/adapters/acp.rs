@@ -154,7 +154,7 @@ pub(super) async fn run_connection(
                 cx.send_request(UntypedMessage::new("session/set_model", params)?).block_task().await?;
             }
             if invocation.agent == AgentKind::Cursor {
-                for (id, value) in super::cursor_config(&invocation).map_err(|error| Error::new(-32602, error.to_string()))? {
+                for (id, value) in super::cursor_config(invocation.model.as_deref(), invocation.reasoning_effort.as_deref()).map_err(|error| Error::new(-32602, error.to_string()))? {
                     cx.send_request(SetSessionConfigOptionRequest::new(session.clone(), id.to_owned(), value)).block_task().await?;
                 }
             }

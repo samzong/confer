@@ -1,14 +1,13 @@
 use std::process::Stdio;
 
 use agent_client_protocol::ByteStreams;
-use tokio::process::Command;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use super::{AdapterOutput, Invocation, acp, error_text};
 use crate::types::AgentKind;
 
 pub(super) async fn run(invocation: Invocation) -> AdapterOutput {
-    let mut command = Command::new(&invocation.executable);
+    let mut command = invocation.command();
     match invocation.agent {
         AgentKind::Grok => {
             command.args(["agent", "--no-leader", "--always-approve"]);
@@ -29,7 +28,6 @@ pub(super) async fn run(invocation: Invocation) -> AdapterOutput {
         _ => return AdapterOutput::failed("agent has no native ACP transport".into()),
     }
     command
-        .current_dir(&invocation.workspace)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

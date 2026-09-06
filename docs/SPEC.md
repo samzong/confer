@@ -22,7 +22,11 @@ MCP is the public protocol. Every seat uses an ACP v1 lifecycle internally. Curs
 
 ## Room model
 
-A room belongs to one normalized workspace. In a Git repository, the workspace is the canonical result of `git rev-parse --show-toplevel`. Different Git worktrees are different workspaces. Outside Git, the canonical current directory is the workspace.
+A room belongs to one normalized workspace supplied explicitly by the host task, never inferred from the MCP process working directory. The input must be an absolute path to an existing directory. Creation and current-workspace discovery normalize a Git directory to the canonical result of `git rev-parse --show-toplevel`. Different Git worktrees are different workspaces. Outside Git, the canonical supplied directory is the workspace.
+
+The host verifies the returned root against its own task before using it for subsequent room calls. Existing-room operations canonicalize the supplied root and require it to match the stored room workspace; they do not rediscover a Git root or retarget the room. Symlink aliases of the same root are accepted. Workspace matching prevents accidental cross-project routing, not filesystem access by a malicious caller.
+
+Workspace discovery and participant processes both ignore inherited `GIT_DIR` and `GIT_WORK_TREE`. All participant transports start in the verified room root; changing the MCP server's launch environment cannot redirect these Git location variables into a different project.
 
 The current MCP host is a room member and moderator. The default room size is three members including the current host, so the usual default is two external seats. At creation, `target_size` requests an initial total member count including the host. Explicit seats may increase that initial size, and `add_seat` may grow a room later. The same agent type may occupy multiple seats, with the same or different models.
 
@@ -42,7 +46,7 @@ Each external seat has these optional selection fields:
 }
 ```
 
-`name` is a room address, not a built-in role. `instructions` are visible only to that seat and remain part of its native session context. Confer generates a unique seat name when none is supplied.
+`name` is a room address, not a built-in role. `instructions` are visible only to that seat. Every delivery includes those stable instructions and the current message, including when resuming a session whose first prompt failed. A recorded native session ID does not imply that instructions were delivered. Confer generates a unique seat name when none is supplied.
 
 Rooms have no lifecycle status, automatic expiration, or garbage collection. A persisted room remains addressable by ID in its workspace. Starting a new room does not change or delete earlier rooms.
 
@@ -71,6 +75,8 @@ Room metadata writes use a short advisory lock and atomic replacement. Current w
 
 Readiness checks are local and run when a room is created, when a seat is added, and before each delivery starts. They inspect the executable and local authentication or configuration state without calling a model or checking quota. A positive result means `locally_ready`; it does not guarantee provider availability, model access, or remaining quota.
 
+Creation and seat addition validate the final selected agent's deterministic configuration before saving any room change. Delivery uses the same validation. Malformed Cursor model options, conflicting option sources, and unsupported local effort values fail immediately. Model availability and provider-specific capabilities remain native runtime checks. Cursor accepts `reasoning_effort` without `model` and applies it to its configured default model; a default that does not support that effort returns a native error.
+
 The current host, guided by the Skill, normally selects seat specifications from the task. Explicit user choices take precedence. When the host supplies no seats, Confer fills the requested size from locally ready supported agents.
 
 If a requested participant is unavailable, Confer may replace it with another locally ready supported agent. The response must report the requested seat, replacement, and reason. A logical seat survives replacement and keeps its name and authorized room view. A replacement never receives another seat’s private messages or replies.
@@ -89,14 +95,15 @@ Each seat has a private native session, sees only addressed messages, and return
 
 ## MCP tools
 
-The public MCP surface contains six tools.
+The public MCP surface contains six tools. Workspace-scoped calls require an explicit `workspace`; `list_rooms` with `scope: all` is the only exception. Callers must update their arguments and bundled Skill together, restart the MCP connection, and refresh its tool schemas. The room cache format is unchanged, and existing rooms are not automatically moved to another workspace.
 
 ### `create_room`
 
-Creates a room for the current workspace.
+Creates a room for the host task's supplied workspace.
 
 Input:
 
+- `workspace`: required absolute directory from the current host task;
 - `name`: optional human-readable room name;
 - `target_size`: optional total member count including the current host, default `3`;
 - `host_agent`: optional current host ID when automatic detection is unavailable;
@@ -106,15 +113,15 @@ Output includes the room ID, normalized workspace, roster, readiness results, an
 
 ### `add_seat`
 
-Adds one private seat to a room in the current workspace. The input uses the same agent, model, effort, name, and instruction fields as room creation. Existing and retired seat names remain reserved. Output includes the updated room, readiness results, and any replacement.
+Adds one private seat using `room_id`, the host-verified workspace root in `workspace`, and `seat`. The seat uses the same agent, model, effort, name, and instruction fields as room creation. Existing and retired seat names remain reserved. Output includes the updated room, readiness results, and any replacement.
 
 ### `retire_seat`
 
-Retires one seat by name or ID in a room in the current workspace. A busy seat returns `seat_busy`. Retirement preserves the native session mapping but is irreversible.
+Retires one seat by name or ID using `room_id`, `seat`, and the host-verified workspace root in `workspace`. A busy seat returns `seat_busy`. Retirement preserves the native session mapping but is irreversible.
 
 ### `list_rooms`
 
-Lists rooms. `scope` defaults to `current`; `all` returns metadata for every recorded workspace. The host calls this only when the user explicitly asks to recover an earlier room. Discovery does not allow `send_message`, `add_seat`, or `retire_seat` to cross workspace boundaries.
+Lists rooms. `scope` defaults to `current`, which requires the host task's absolute directory in `workspace` and normalizes it like creation. `all` returns metadata for every recorded workspace without requiring a workspace or inspecting the MCP process working directory. The host calls this only when the user explicitly asks to recover an earlier room. Discovery does not authorize operating on rooms outside the host task's workspace.
 
 Output includes room ID, name, participants, native-session availability, and timestamps. It never returns message content.
 
@@ -125,6 +132,7 @@ Sends one message to one seat, selected seats, or all external seats.
 Input:
 
 - `room_id`;
+- `workspace`: the host-verified workspace root;
 - `recipients`: one or more seat names or IDs, or `*` for broadcast;
 - `message`.
 
@@ -132,7 +140,7 @@ The send returns one receipt and new `delivery_id` per recipient plus immediate 
 
 ### `wait_output`
 
-Waits for specified deliveries or the room’s current live deliveries. `timeout_ms` defaults to `120000`, accepts `0` for an immediate snapshot, and is capped at `600000`.
+Waits for specified deliveries or the room’s current live deliveries. Requires `room_id` and the host-verified workspace root in `workspace`. `timeout_ms` defaults to `120000`, accepts `0` for an immediate snapshot, and is capped at `600000`.
 
 Output contains each delivery’s `queued`, `running`, `completed`, or `failed` status, final assistant answer, and error. It does not expose thinking, token deltas, or intermediate tool events. A timeout returns completed results and current non-terminal statuses without cancelling them.
 
@@ -155,6 +163,8 @@ MCP and Skill installation are deliberately independent. `confer mcp install` ne
 `confer skill install` embeds the [canonical Skill](../skills/confer/SKILL.md) and delegates target paths, conflict protection, updates, scope, and dry-run reporting to Kitup. User scope is the default.
 
 `confer mcp install` follows each host’s supported registration mechanism. Repeated installation updates the Confer-owned registration without deleting unrelated MCP entries. Uninstall removes only the `confer` entry.
+
+Explicit `--agent cursor` registration and removal edit Cursor's MCP configuration without requiring the participant CLI on `PATH`. Default selection and `--agent '*'` still discover installed host executables; they do not create Cursor configuration on machines without its CLI. Other hosts require their native registration command. Registration does not establish participant readiness or authentication.
 
 ## Adapter contract
 

@@ -25,7 +25,7 @@ fn invocation(directory: &Path, agent: AgentKind, script: &str) -> Invocation {
 async fn cli_bridge_preserves_native_identity_and_prompt() {
     for agent in [AgentKind::Claude, AgentKind::Agy] {
         let directory = tempfile::tempdir().unwrap();
-        let invocation = invocation(
+        let mut invocation = invocation(
             directory.path(),
             agent,
             r#"
@@ -33,7 +33,7 @@ printf '%s\n' "$@" > arguments
 printf '%s\n' '{"session_id":"native-session","result":"Final answer"}'
 "#,
         );
-        let output = run(invocation).await;
+        let output = run(invocation.clone()).await;
         assert_eq!(
             output.observed_session_id.as_deref(),
             Some("native-session")
@@ -42,7 +42,81 @@ printf '%s\n' '{"session_id":"native-session","result":"Final answer"}'
         assert!(output.error.is_none(), "{output:?}");
         let arguments = std::fs::read_to_string(directory.path().join("arguments")).unwrap();
         assert!(arguments.contains("Private seat instructions\n\nCurrent task"));
+        invocation.first_message = false;
+        invocation.native_session_id = output.observed_session_id;
+        invocation.message = "Follow-up task".into();
+        let output = run(invocation).await;
+        assert!(output.error.is_none(), "{output:?}");
+        assert_eq!(
+            output.observed_session_id.as_deref(),
+            Some("native-session")
+        );
+        let arguments = std::fs::read_to_string(directory.path().join("arguments")).unwrap();
+        assert!(arguments.contains("Private seat instructions\n\nFollow-up task"));
+        assert!(!arguments.contains("Current task"));
     }
+}
+
+#[tokio::test]
+async fn native_git_uses_the_invocation_workspace() {
+    if std::env::var_os("CONFER_TEST_NATIVE_GIT").is_none() {
+        let foreign = tempfile::tempdir().unwrap();
+        let initialized = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(foreign.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .status()
+            .unwrap();
+        assert!(initialized.success());
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "adapters::cli_tests::native_git_uses_the_invocation_workspace",
+                "--nocapture",
+            ])
+            .env("CONFER_TEST_NATIVE_GIT", "1")
+            .env("GIT_DIR", foreign.path().join(".git"))
+            .env("GIT_WORK_TREE", foreign.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("NATIVE_GIT_SCOPE_VERIFIED"));
+        return;
+    }
+    assert!(std::env::var_os("GIT_DIR").is_some());
+    assert!(std::env::var_os("GIT_WORK_TREE").is_some());
+    for agent in AgentKind::ALL {
+        let directory = tempfile::tempdir().unwrap();
+        let initialized = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(directory.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .status()
+            .unwrap();
+        assert!(initialized.success());
+        let invocation = invocation(
+            directory.path(),
+            agent,
+            "git rev-parse --show-toplevel > observed-root\nexit 1",
+        );
+        let output = run(invocation).await;
+        assert!(output.error.is_some());
+        let root = std::fs::read_to_string(directory.path().join("observed-root")).unwrap();
+        assert_eq!(
+            Path::new(root.trim()),
+            directory.path().canonicalize().unwrap(),
+            "{}",
+            agent.id()
+        );
+    }
+    println!("NATIVE_GIT_SCOPE_VERIFIED");
 }
 
 #[tokio::test]

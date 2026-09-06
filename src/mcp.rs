@@ -69,7 +69,7 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "Create a multi-agent task room for the current Git worktree. The current host counts toward target_size, which defaults to three. This only checks local readiness and creates logical seats; it never calls a model. Explicit unavailable agents may be replaced, and every replacement is reported.",
+        description = "Create a multi-agent task room. Pass workspace as the actual current task's absolute directory. The returned workspace is normalized to its Git worktree root, or the canonical directory outside Git. Verify that root belongs to your task and use it for followup calls; never substitute another room's workspace to bypass a mismatch. The current host counts toward target_size, which defaults to three. This checks local readiness and seat configuration and creates logical seats; it never calls a model. Explicit unavailable agents may be replaced, and every replacement is reported.",
         annotations(
             title = "Create room",
             read_only_hint = false,
@@ -85,7 +85,7 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "Add one private seat to a room in the current Git worktree. The seat starts a new native session on its first message. Explicit unavailable agents may be replaced, and every replacement is reported.",
+        description = "Add one private seat to a room. Pass the normalized workspace root already verified against your actual current task when creating or recovering the room. A different workspace is rejected; never substitute another room's workspace to bypass a mismatch. The seat starts a new native session on its first message. Explicit unavailable agents may be replaced, and every replacement is reported.",
         annotations(
             title = "Add seat",
             read_only_hint = false,
@@ -101,7 +101,7 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "Retire one seat in a room in the current Git worktree. A retired seat keeps its metadata and native session mapping but can no longer receive messages. A known running delivery must finish first.",
+        description = "Retire one seat in a room. Pass the normalized workspace root already verified against your actual current task when creating or recovering the room. A different workspace is rejected; never substitute another room's workspace to bypass a mismatch. A retired seat keeps its metadata and native session mapping but can no longer receive messages. A known running delivery must finish first.",
         annotations(
             title = "Retire seat",
             read_only_hint = false,
@@ -117,7 +117,7 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "List Confer rooms. scope defaults to current for the current Git worktree; use all to inspect rooms across every recorded workspace. Returns room and participant metadata only, never messages or agent outputs.",
+        description = "List Confer rooms. scope defaults to current, which requires workspace as the actual current task's absolute directory. Verify the returned normalized Git worktree root, or canonical directory outside Git, belongs to your task before using that root for followup calls. Never substitute another room's workspace to bypass a mismatch. scope all requires no workspace and lists rooms across every recorded workspace. Returns room and participant metadata only, never messages or agent outputs.",
         annotations(
             title = "List rooms",
             read_only_hint = true,
@@ -129,13 +129,11 @@ impl ConferMcp {
         &self,
         Parameters(args): Parameters<ListRoomsArgs>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        Ok(json_result(
-            self.list_rooms_inner(args.scope.unwrap_or_default()),
-        ))
+        Ok(json_result(self.list_rooms_inner(args)))
     }
 
     #[tool(
-        description = "Queue one message for one or more external seats in a room. Use recipient '*' to broadcast. Idle seats start promptly and busy seats run messages FIFO. Every recipient gets a delivery ID for wait_output.",
+        description = "Queue one message for one or more external seats in a room. Pass the normalized workspace root already verified against your actual current task when creating or recovering the room. A different workspace is rejected; never substitute another room's workspace to bypass a mismatch. Use recipient '*' to broadcast. Idle seats start promptly and busy seats run messages FIFO. Every recipient gets a delivery ID for wait_output.",
         annotations(
             title = "Send message",
             read_only_hint = false,
@@ -151,7 +149,7 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "Wait for final answers from live deliveries. Pass delivery IDs to wait for specific sends, or omit them to wait for every delivery from this room still known to the current MCP process. A timeout returns completed answers plus queued and running statuses without cancellation. Thinking, token deltas, and tool events are never returned.",
+        description = "Wait for final answers from live deliveries. Pass the normalized workspace root already verified against your actual current task when creating or recovering the room. A different workspace is rejected; never substitute another room's workspace to bypass a mismatch. Pass delivery IDs to wait for specific sends, or omit them to wait for every delivery from this room still known to the current MCP process. A timeout returns completed answers plus queued and running statuses without cancellation. Thinking, token deltas, and tool events are never returned.",
         annotations(
             title = "Wait for output",
             read_only_hint = true,

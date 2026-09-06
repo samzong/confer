@@ -4,11 +4,12 @@ use anyhow::{Context, Result, bail};
 
 use super::ConferMcp;
 use super::api::{
-    AddSeatArgs, AddSeatOutput, CreateRoomArgs, CreateRoomOutput, ListRoomsOutput, RetireSeatArgs,
-    RetireSeatOutput, RoomScope, SeatSpecInput, room_view, rooms_for_scope, timestamp,
+    AddSeatArgs, AddSeatOutput, CreateRoomArgs, CreateRoomOutput, ListRoomsArgs, ListRoomsOutput,
+    RetireSeatArgs, RetireSeatOutput, RoomScope, SeatSpecInput, room_view, rooms_for_scope,
+    timestamp,
 };
 use crate::adapters;
-use crate::state::current_workspace;
+use crate::state::{canonical_workspace, normalize_workspace};
 use crate::types::{
     AgentKind, HostRecord, Readiness, Replacement, RoomRecord, SeatRecord, SeatStatus,
 };
@@ -18,7 +19,7 @@ const MAX_ROOM_SIZE: usize = 16;
 
 impl ConferMcp {
     pub(super) fn create_room_inner(&self, args: CreateRoomArgs) -> Result<CreateRoomOutput> {
-        let workspace = current_workspace()?;
+        let workspace = normalize_workspace(&args.workspace)?;
         let readiness = adapters::readiness();
         let host_agent = detect_host_agent(args.host_agent.as_deref());
         let requested_size = args.target_size.unwrap_or(DEFAULT_ROOM_SIZE);
@@ -55,7 +56,7 @@ impl ConferMcp {
     }
 
     pub(super) fn add_seat_inner(&self, args: AddSeatArgs) -> Result<AddSeatOutput> {
-        let workspace = current_workspace()?;
+        let workspace = canonical_workspace(&args.workspace)?;
         let workspace_text = workspace.to_string_lossy().into_owned();
         let readiness = adapters::readiness();
         let room = self.store.room_for_workspace(&args.room_id, &workspace)?;
@@ -95,7 +96,7 @@ impl ConferMcp {
     }
 
     pub(super) async fn retire_seat_inner(&self, args: RetireSeatArgs) -> Result<RetireSeatOutput> {
-        let workspace = current_workspace()?;
+        let workspace = canonical_workspace(&args.workspace)?;
         let workspace_text = workspace.to_string_lossy().into_owned();
         let room = self.store.room_for_workspace(&args.room_id, &workspace)?;
         let seat = room
@@ -134,13 +135,24 @@ impl ConferMcp {
         })
     }
 
-    pub(super) fn list_rooms_inner(&self, scope: RoomScope) -> Result<ListRoomsOutput> {
-        let workspace = current_workspace()?;
-        let workspace_text = workspace.to_string_lossy().into_owned();
-        let rooms = rooms_for_scope(self.store.load()?.rooms, scope, &workspace_text);
+    pub(super) fn list_rooms_inner(&self, args: ListRoomsArgs) -> Result<ListRoomsOutput> {
+        let scope = args.scope.unwrap_or_default();
+        let workspace = match scope {
+            RoomScope::Current => Some(
+                normalize_workspace(
+                    args.workspace
+                        .as_deref()
+                        .context("workspace is required for current scope")?,
+                )?
+                .to_string_lossy()
+                .into_owned(),
+            ),
+            RoomScope::All => None,
+        };
+        let rooms = rooms_for_scope(self.store.load()?.rooms, scope, workspace.as_deref());
         Ok(ListRoomsOutput {
             scope,
-            workspace: matches!(scope, RoomScope::Current).then_some(workspace_text),
+            workspace,
             rooms,
         })
     }
@@ -237,12 +249,15 @@ fn select_seats_with_names(
                 reason: "requested agent is not locally ready".into(),
             });
         }
+        let model = (!replaced).then_some(spec.model).flatten();
+        let reasoning_effort = (!replaced).then_some(spec.reasoning_effort).flatten();
+        adapters::validate_seat_config(selected, model.as_deref(), reasoning_effort.as_deref())?;
         seats.push(SeatRecord {
             id: uuid::Uuid::new_v4().to_string(),
             name,
             agent: selected,
-            model: (!replaced).then_some(spec.model).flatten(),
-            reasoning_effort: (!replaced).then_some(spec.reasoning_effort).flatten(),
+            model,
+            reasoning_effort,
             instructions: spec.instructions,
             native_session_id: None,
             status: SeatStatus::Active,
@@ -287,7 +302,7 @@ mod tests {
     use crate::mcp::ConferMcp;
     use crate::mcp::api::{RetireSeatArgs, SeatSpecInput};
     use crate::mcp::delivery::DeliveryRuntime;
-    use crate::state::{StateStore, current_workspace};
+    use crate::state::StateStore;
     use crate::types::{AgentKind, HostRecord, Readiness, RoomRecord, SeatRecord, SeatStatus};
 
     fn ready(agent: AgentKind) -> Readiness {
@@ -396,11 +411,44 @@ mod tests {
         assert_eq!(replacements[0].seat_name, seats[0].name);
     }
 
+    #[test]
+    fn seat_selection_validates_the_final_agent_configuration() {
+        for (agent, model, effort) in [
+            (AgentKind::Cursor, Some("model[effort=high]"), Some("high")),
+            (AgentKind::Cursor, Some("model[effort"), None),
+            (AgentKind::Claude, None, Some("invalid")),
+            (AgentKind::Agy, None, Some("xhigh")),
+        ] {
+            let request = SeatSpecInput {
+                agent: Some(agent.id().into()),
+                model: model.map(str::to_owned),
+                reasoning_effort: effort.map(str::to_owned),
+                name: None,
+                instructions: None,
+            };
+            assert!(select_seats(vec![request], 1, None, &[ready(agent)]).is_err());
+        }
+        let request = SeatSpecInput {
+            agent: Some("cursor".into()),
+            model: Some("model[effort".into()),
+            reasoning_effort: Some("invalid".into()),
+            name: None,
+            instructions: Some("Review only".into()),
+        };
+        let (seats, replacements) =
+            select_seats(vec![request], 1, None, &[ready(AgentKind::Claude)]).unwrap();
+        assert_eq!(replacements.len(), 1);
+        assert_eq!(seats[0].agent, AgentKind::Claude);
+        assert!(seats[0].model.is_none());
+        assert!(seats[0].reasoning_effort.is_none());
+        assert_eq!(seats[0].instructions.as_deref(), Some("Review only"));
+    }
+
     #[tokio::test]
     async fn retiring_seat_preserves_its_native_session() {
         let dir = tempfile::tempdir().unwrap();
         let store = StateStore::new(dir.path().join("rooms.json"));
-        let workspace = current_workspace().unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
         let mut record = room("room-1", &workspace.to_string_lossy());
         record.seats.push(SeatRecord {
             id: "seat-1".into(),
@@ -422,8 +470,78 @@ mod tests {
         let mut worker = service.runtime.register_worker("room-1", "seat-1").await;
         assert!(service.runtime.has_worker("room-1", "seat-1").await);
 
+        let output = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(&workspace)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let subdir = workspace.join("src");
+        std::fs::create_dir(&subdir).unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let before = std::fs::read(store.path()).unwrap();
+        for caller in [other.path().canonicalize().unwrap(), subdir] {
+            assert!(
+                service
+                    .add_seat_inner(
+                        serde_json::from_value(serde_json::json!({
+                            "workspace": caller,
+                            "room_id": "room-1",
+                            "seat": {"agent": "claude"},
+                        }))
+                        .unwrap()
+                    )
+                    .is_err()
+            );
+            assert!(
+                service
+                    .retire_seat_inner(
+                        serde_json::from_value(serde_json::json!({
+                            "workspace": caller,
+                            "room_id": "room-1",
+                            "seat": "reviewer",
+                        }))
+                        .unwrap()
+                    )
+                    .await
+                    .is_err()
+            );
+            assert!(
+                service
+                    .send_message_inner(
+                        serde_json::from_value(serde_json::json!({
+                            "workspace": caller,
+                            "room_id": "room-1",
+                            "recipients": ["reviewer"],
+                            "message": "Review this change",
+                        }))
+                        .unwrap()
+                    )
+                    .await
+                    .is_err()
+            );
+            assert!(
+                service
+                    .wait_output_inner(
+                        serde_json::from_value(serde_json::json!({
+                            "workspace": caller,
+                            "room_id": "room-1",
+                            "timeout_ms": 0,
+                        }))
+                        .unwrap()
+                    )
+                    .await
+                    .is_err()
+            );
+            assert_eq!(std::fs::read(store.path()).unwrap(), before);
+            assert!(service.runtime.has_worker("room-1", "seat-1").await);
+        }
+
         service
             .retire_seat_inner(RetireSeatArgs {
+                workspace,
                 room_id: "room-1".into(),
                 seat: "reviewer".into(),
             })
