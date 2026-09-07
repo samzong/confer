@@ -1,6 +1,8 @@
 # Confer
 
-Confer gives the current coding agent a local room for consulting Claude Code, Codex, Cursor Agent, Grok Build, and Antigravity CLI through MCP.
+Confer exposes local coding-agent execution through MCP. Coding agents and other applications can create rooms, send work to Claude Code, Codex, Cursor Agent, Grok Build, and Antigravity CLI, and collect their results.
+
+The host manages tasks and relays; it is not an execution seat. Supply `target_size` for automatic seat selection, explicit `seats`, or both. There is no default count or fixed seat limit, and identical agent configurations can occupy independent seats.
 
 ![Confer architecture](docs/confer-architecture.svg)
 

@@ -122,11 +122,3 @@ pub(crate) struct Readiness {
     pub(crate) executable: Option<String>,
     pub(crate) reason: Option<String>,
 }
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct Replacement {
-    pub(crate) seat_name: String,
-    pub(crate) requested_agent: String,
-    pub(crate) replacement_agent: String,
-    pub(crate) reason: String,
-}

@@ -7,6 +7,8 @@ description: Coordinate Claude Code, Codex, Cursor Agent, Grok, and Antigravity 
 
 Create a room only when another coding agent can materially improve the task, not for a routine question the current agent can answer and verify directly.
 
+The host acts as the management agent: choose seats, divide work, control relays, verify results, and synthesize the answer. The host is not an execution seat.
+
 Confer MCP owns room metadata, native session routing, and message delivery. Never invoke participant CLIs directly or create another room state file.
 
 ## Create the Room
@@ -17,7 +19,7 @@ Honor explicit choices for agent, model, reasoning effort, participant count, ro
 - implementation needs the agent best suited to the codebase and explicit authority boundaries;
 - review needs a private session that has not seen the authoring answer, and research comparisons need blind seats before any critique round.
 
-The default target size is three including the host. Give seats short unique names and private instructions. Treat one room as one coordination context: add a new seat when a later phase needs another role, and retire a seat only after its delivery finishes and its role is complete.
+Choose the number of execution seats from the task; there is no default count. Supply a positive `target_size`, explicit `seats`, or both. `target_size` excludes the host. Confer preserves explicit seats and automatically fills remaining positions, preferring agent types other than the host. The same agent, model, and reasoning effort may be used by multiple independent seats. Give seats short unique names and private instructions. Treat one room as one coordination context: add a new seat when a later phase needs another role, and retire a seat only after its delivery finishes and its role is complete.
 
 ## Keep Seats Private
 
@@ -35,7 +37,7 @@ Supply `workspace` from the current host task's actual absolute directory, not t
 
 Use this sequence for the selected room:
 
-1. Call create_room with workspace and explicit seat specifications only when a new room is required.
+1. Call create_room with workspace and target_size, seat specifications, or both only when a new room is required.
 2. Call send_message with the verified workspace root for the task. Use selected recipients for private work and * only for a deliberate broadcast.
 3. Call wait_output with that root and the returned delivery IDs.
 4. Send targeted follow-ups or relays only when needed. Follow-ups to a busy seat join that seat's queue.
@@ -46,9 +48,11 @@ Use list_rooms only when the user explicitly asks to recover or continue an earl
 
 Messages may run concurrently across different seats. Each seat has one FIFO queue. Confer reports native failures without retry.
 
+If create_room or add_seat rejects an unavailable agent, the operation leaves room state unchanged. The host may choose another agent according to the user's instructions or personal skill and submit a new request. Confer does not replace explicitly selected agents. A failed delivery may already have changed files; verify its effects before retrying or assigning the work elsewhere.
+
 After an MCP restart, pending Queue messages are lost and unfinished deliveries are uncertain. Verify native work before sending another message; never infer that the released lease means the previous agent stopped.
 
-After upgrading Confer, refresh the MCP connection and tool schemas. Calls that omit the required workspace are rejected; do not infer a fallback from the server's working directory or silently relocate an older room.
+After upgrading Confer, refresh the MCP connection and tool schemas. target_size now counts execution seats only; update older calls that included the host. Creation requires a positive target_size or at least one seat, and create_room and add_seat no longer return replacements. Calls that omit the required workspace are rejected; do not infer a fallback from the server's working directory or silently relocate an older room.
 
 ## Report the Result
 

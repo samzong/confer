@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" data-blueprint-diagram="true" viewBox="0 0 1300 900" role="img" aria-labelledby="title desc" font-family="Comic Sans MS, Chalkboard SE, Bradley Hand, Segoe Print, cursive" text-rendering="geometricPrecision">
   <title id="title">Confer architecture</title>
-  <desc id="desc">Confer is a host-moderated task room. Six MCP tools manage room identity, seat lifecycle, and message delivery. A central room router exchanges private messages and answers with logical seats. Every seat has a FIFO delivery queue and its own native agent session. Final answers pass through the in-memory delivery map back to the host. Room metadata is durable, and every native agent shares the same full-permission workspace.</desc>
+  <desc id="desc">Confer runs local coding-agent seats through MCP. The host manages the work outside the execution seats. Six MCP tools manage room identity, seat lifecycle, and message delivery. A central room router exchanges private messages and answers with logical seats. Every seat has a FIFO delivery queue and its own native agent session. Final answers pass through the in-memory delivery map back to the host. Room metadata is durable, and every native agent shares the same full-permission workspace.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0 0 L10 5 L0 10 z" fill="#363b42"/>
@@ -51,21 +51,21 @@
   <text x="68" y="581" class="body">address seats · collect answers</text>
   <text x="68" y="600" class="mono">one FIFO queue per seat</text>
 
-  <text x="50" y="660" class="headingSmall">Six tools, one moderator</text>
+  <text x="50" y="660" class="headingSmall">Host owns task management</text>
   <text x="50" y="685" class="body">The host chooses seats and decides</text>
   <text x="50" y="703" class="body">every follow-up or relay.</text>
 
   <rect x="325" y="130" width="650" height="600" rx="26" fill="#fffdf6" stroke="#d98619" stroke-width="2.2"/>
-  <text x="350" y="162" class="group">Confer task room · logical collaboration boundary</text>
+  <text x="350" y="162" class="group">Confer coordination overview</text>
 
   <rect x="365" y="184" width="570" height="48" rx="10" class="box" fill="#f6edf8" stroke="#8d58c7" stroke-dasharray="6 4"/>
   <text x="385" y="205" class="headingSmall">Seat adapters</text>
   <text x="385" y="222" class="mono">Claude · Codex · Cursor · Grok · Antigravity · agent types may repeat</text>
 
   <rect x="540" y="260" width="220" height="84" rx="14" class="box" fill="#e9f4fb" stroke="#287bb5"/>
-  <text x="650" y="289" class="heading" text-anchor="middle">Current host</text>
-  <text x="650" y="312" class="body" text-anchor="middle">room member · moderator</text>
-  <text x="650" y="330" class="mono" text-anchor="middle">counts toward target_size</text>
+  <text x="650" y="289" class="heading" text-anchor="middle">Host</text>
+  <text x="650" y="312" class="body" text-anchor="middle">management agent / application</text>
+  <text x="650" y="330" class="mono" text-anchor="middle">target_size counts seats only</text>
 
   <ellipse cx="650" cy="424" rx="102" ry="62" fill="#fff2dd" stroke="#d98619" stroke-width="2.2"/>
   <text x="650" y="409" class="heading" text-anchor="middle">Room router</text>

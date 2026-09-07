@@ -7,7 +7,7 @@ use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::types::{AgentKind, Readiness, Replacement, RoomRecord, SeatStatus};
+use crate::types::{AgentKind, Readiness, RoomRecord, SeatStatus};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub(super) struct SeatSpecInput {
@@ -29,7 +29,7 @@ pub(super) struct CreateRoomArgs {
     #[serde(default)]
     pub(super) name: Option<String>,
     #[serde(default)]
-    #[schemars(range(min = 2, max = 16))]
+    #[schemars(range(min = 1))]
     pub(super) target_size: Option<usize>,
     #[serde(default)]
     pub(super) host_agent: Option<String>,
@@ -112,7 +112,6 @@ pub(super) struct RoomView {
 pub(super) struct CreateRoomOutput {
     pub(super) room: RoomView,
     pub(super) readiness: Vec<Readiness>,
-    pub(super) replacements: Vec<Replacement>,
 }
 
 #[derive(Debug, Serialize)]
@@ -126,7 +125,6 @@ pub(super) struct ListRoomsOutput {
 pub(super) struct AddSeatOutput {
     pub(super) room: RoomView,
     pub(super) readiness: Vec<Readiness>,
-    pub(super) replacements: Vec<Replacement>,
 }
 
 #[derive(Debug, Serialize)]
