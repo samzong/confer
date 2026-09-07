@@ -69,7 +69,7 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "Create a multi-agent task room. Pass workspace as the actual current task's absolute directory. The returned workspace is normalized to its Git worktree root, or the canonical directory outside Git. Verify that root belongs to your task and use it for followup calls; never substitute another room's workspace to bypass a mismatch. The current host counts toward target_size, which defaults to three. This checks local readiness and seat configuration and creates logical seats; it never calls a model. Explicit unavailable agents may be replaced, and every replacement is reported.",
+        description = "Create a multi-agent task room. Pass workspace as the actual current task's absolute directory. The returned workspace is normalized to its Git worktree root, or the canonical directory outside Git. Verify that root belongs to your task and use it for followup calls; never substitute another room's workspace to bypass a mismatch. target_size counts execution seats and excludes the host. Provide a positive target_size or at least one seat; there is no default count or fixed seat limit. Explicit seats are preserved and any remaining target positions are selected automatically, preferring agent types other than the host. This checks local readiness and seat configuration and creates logical seats; it never calls a model. An explicitly requested unavailable agent fails the operation without changing room state; the caller decides whether to retry with another agent.",
         annotations(
             title = "Create room",
             read_only_hint = false,
@@ -85,7 +85,7 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "Add one private seat to a room. Pass the normalized workspace root already verified against your actual current task when creating or recovering the room. A different workspace is rejected; never substitute another room's workspace to bypass a mismatch. The seat starts a new native session on its first message. Explicit unavailable agents may be replaced, and every replacement is reported.",
+        description = "Add one private seat to a room. Pass the normalized workspace root already verified against your actual current task when creating or recovering the room. A different workspace is rejected; never substitute another room's workspace to bypass a mismatch. The seat starts a new native session on its first message. An explicitly requested unavailable agent fails the operation without changing room state; the caller decides whether to retry with another agent.",
         annotations(
             title = "Add seat",
             read_only_hint = false,
@@ -176,7 +176,7 @@ fn server_info() -> ServerInfo {
     ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
         .with_server_info(Implementation::new("confer", env!("CARGO_PKG_VERSION")))
         .with_instructions(
-            "Create a room when the user asks to consult or coordinate other coding agents. Reuse a room only when its ID is already part of the current host session context; create a new room for a new host session or when the user asks for one. Use list_rooms only to recover a room the user explicitly wants to continue. The current host moderates every relay. Seats are private by default: do not reveal one seat's answer to another unless the user requests critique or collaboration. Messages use per-seat FIFO queues.",
+            "Confer provides local coding-agent execution through MCP. The caller manages task decomposition, room reuse, relays, and result acceptance. The host is not an execution seat. Create rooms with target_size or explicit seats; automatic selection prefers agent types other than the host, and identical configurations may occupy multiple independent seats. Explicit unavailable agents fail without replacement. Seats receive only addressed messages and use per-seat FIFO queues.",
         )
 }
 

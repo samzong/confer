@@ -35,7 +35,7 @@ Evaluate only claims supported by saved metadata or current code:
 - whether room creation, discovery, deletion, expiration, and pruning match actual accumulation;
 - whether requested and resolved agent, model, and reasoning settings are reproducible;
 - whether review work binds to a stable artifact fingerprint while writers share the workspace;
-- whether replacement behavior preserves the caller's intended role and capability;
+- whether automatic selection fills the requested seat count and explicit unavailable agents fail without changing room state;
 - whether `SPEC.md`, the bundled skill, MCP schemas, and implementation describe the same product.
 
 Keep these evidence rules explicit:

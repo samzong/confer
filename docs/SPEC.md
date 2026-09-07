@@ -2,7 +2,7 @@
 
 ## Product definition
 
-Confer is a local MCP server that lets the current coding agent consult, coordinate, and resume other installed coding agents without copying text between terminal windows. It is a standalone Rust binary and has no dependency on Recall, Orca, or a daemon.
+Confer is a local MCP server for running and resuming installed coding agents. A coding agent or another application can integrate through MCP and manage task decomposition, relays, and result acceptance. It is a standalone Rust binary and has no dependency on Recall, Orca, or a daemon.
 
 ![Confer architecture](confer-architecture.svg)
 
@@ -28,9 +28,11 @@ The host verifies the returned root against its own task before using it for sub
 
 Workspace discovery and participant processes both ignore inherited `GIT_DIR` and `GIT_WORK_TREE`. All participant transports start in the verified room root; changing the MCP server's launch environment cannot redirect these Git location variables into a different project.
 
-The current MCP host is a room member and moderator. The default room size is three members including the current host, so the usual default is two external seats. At creation, `target_size` requests an initial total member count including the host. Explicit seats may increase that initial size, and `add_seat` may grow a room later. The same agent type may occupy multiple seats, with the same or different models.
+The host manages the work and is not an execution seat. In coding-agent workflows, the host acts as the management agent; applications may implement that role in code. At creation, `target_size` requests execution seats only. It must be positive when supplied. There is no default count or fixed seat limit: provide `target_size`, at least one explicit seat, or both. Creation uses the larger of `target_size` and the explicit seat count, and `add_seat` may grow the room later.
 
-A room is the task container for one initiating host session context. The host reuses a room only while its ID remains part of that current context. A new host session creates a new room even in the same workspace, and an explicit user request for a new room always creates one. Workspace matching never implies automatic reuse. Historical discovery happens only when the user explicitly asks to continue an earlier room.
+A seat has an independent ID, room address, and native session mapping. Agent, model, and reasoning effort are configuration fields, not a unique identity. Multiple seats may use identical configurations, and the number of seats is not limited by the number of installed agent types.
+
+A room is a coordination context whose reuse is decided by the caller. Workspace matching does not imply automatic reuse. The bundled Skill guides coding-agent hosts to reuse a room from their current session context and to discover historical rooms only when the user asks to continue one; applications may supply their own workflow.
 
 Rooms may add seats as new roles become useful and retire seats whose role is complete. Retiring a seat preserves its metadata and native session mapping but permanently removes it from direct, multicast, and broadcast addressing.
 
@@ -80,9 +82,9 @@ Readiness checks are local and run when a room is created, when a seat is added,
 
 Creation and seat addition validate the final selected agent's deterministic configuration before saving any room change. Delivery uses the same validation. Malformed Cursor model options, conflicting option sources, and unsupported local effort values fail immediately. Model availability and provider-specific capabilities remain native runtime checks. Cursor accepts `reasoning_effort` without `model` and applies it to its configured default model; a default that does not support that effort returns a native error.
 
-The current host, guided by the Skill, normally selects seat specifications from the task. Explicit user choices take precedence. When the host supplies no seats, Confer fills the requested size from locally ready supported agents.
+The host may specify all, some, or none of the seats. For unspecified agents and remaining target positions, Confer cycles through locally ready supported agents, placing agent types other than the known host first. Agent types may repeat; the host's agent type remains eligible. Explicit agent choices are honored.
 
-If a requested participant is unavailable, Confer may replace it with another locally ready supported agent. The response must report the requested seat, replacement, and reason. A logical seat survives replacement and keeps its name and authorized room view. A replacement never receives another seat’s private messages or replies.
+If an explicitly requested agent is unavailable, creation or seat addition fails with the agent, seat, and readiness reason. The operation does not modify room state. Confer does not choose a replacement or discard the requested model and effort. The caller decides whether to submit a new request with another agent; personal Skills may guide that decision.
 
 ## Session lifecycle
 
@@ -98,7 +100,7 @@ Each seat has a private native session, sees only addressed messages, and return
 
 ## MCP tools
 
-The public MCP surface contains six tools. Workspace-scoped calls require an explicit `workspace`; `list_rooms` with `scope: all` is the only exception. Callers must update their arguments and bundled Skill together, restart the MCP connection, and refresh its tool schemas. The room cache format is unchanged, and existing rooms are not automatically moved to another workspace.
+The public MCP surface contains six tools. Workspace-scoped calls require an explicit `workspace`; `list_rooms` with `scope: all` is the only exception. Callers must update their arguments and bundled Skill together, restart the MCP connection, and refresh its tool schemas. Older callers that counted the host in target_size must now pass the desired execution seat count. Creation without target_size or explicit seats is rejected, and create_room and add_seat no longer return replacements. The room cache format is unchanged, and existing rooms are not automatically moved to another workspace.
 
 ### `create_room`
 
@@ -108,15 +110,15 @@ Input:
 
 - `workspace`: required absolute directory from the current host task;
 - `name`: optional human-readable room name;
-- `target_size`: optional total member count including the current host, default `3`;
+- `target_size`: optional positive execution seat count, excluding the host; no default or fixed upper bound;
 - `host_agent`: optional current host ID when automatic detection is unavailable;
 - `seats`: optional external seat specifications.
 
-Output includes the room ID, normalized workspace, roster, readiness results, and any replacements. It never sends a task.
+Output includes the room ID, normalized workspace, roster, and readiness results. It never sends a task.
 
 ### `add_seat`
 
-Adds one private seat using `room_id`, the host-verified workspace root in `workspace`, and `seat`. The seat uses the same agent, model, effort, name, and instruction fields as room creation. Existing and retired seat names remain reserved. Output includes the updated room, readiness results, and any replacement.
+Adds one private seat using `room_id`, the host-verified workspace root in `workspace`, and `seat`. The seat uses the same agent, model, effort, name, and instruction fields as room creation. Existing and retired seat names remain reserved. Output includes the updated room and readiness results.
 
 ### `retire_seat`
 
@@ -124,7 +126,7 @@ Retires one seat by name or ID using `room_id`, `seat`, and the host-verified wo
 
 ### `list_rooms`
 
-Lists rooms. `scope` defaults to `current`, which requires the host task's absolute directory in `workspace` and normalizes it like creation. `all` returns metadata for every recorded workspace without requiring a workspace or inspecting the MCP process working directory. The host calls this only when the user explicitly asks to recover an earlier room. Discovery does not authorize operating on rooms outside the host task's workspace.
+Lists rooms. `scope` defaults to `current`, which requires the host task's absolute directory in `workspace` and normalizes it like creation. `all` returns metadata for every recorded workspace without requiring a workspace or inspecting the MCP process working directory. The bundled Skill uses this when the user explicitly asks to recover an earlier room; other callers decide their own discovery workflow. Discovery does not authorize operating on rooms outside the host task's workspace.
 
 Output includes room ID, name, participants, native-session availability, and timestamps. It never returns message content.
 
@@ -192,7 +194,7 @@ Model and reasoning fields are requests to the native CLI. An unsupported value 
 
 Confer uses the room workspace as each child process working directory. It does not create filesystem isolation. Independent seats may therefore read or modify the same files even when their messages are isolated.
 
-Confer launches every seat with that agent's full-permission setting so a non-interactive process is never blocked on an approval prompt it cannot answer: Claude and Antigravity receive `--dangerously-skip-permissions`; Codex receives app-server `approvalPolicy: never` and the full-access sandbox policy; Cursor receives `--trust --force`; and Grok receives `--always-approve` and ACP `yoloMode`. Seats therefore run with the same authority as the current host and without sandbox isolation. Explicit task instructions remain the only limit on what a seat is asked to do.
+Confer launches every seat with that agent's full-permission setting so a non-interactive process is never blocked on an approval prompt it cannot answer: Claude and Antigravity receive `--dangerously-skip-permissions`; Codex receives app-server `approvalPolicy: never` and the full-access sandbox policy; Cursor receives `--trust --force`; and Grok receives `--always-approve` and ACP `yoloMode`. Seats therefore run with the authority of the local Confer process and without sandbox isolation. Explicit task instructions remain the only limit on what a seat is asked to do.
 
 ## Errors
 

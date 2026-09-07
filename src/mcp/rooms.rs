@@ -10,28 +10,26 @@ use super::api::{
 };
 use crate::adapters;
 use crate::state::{canonical_workspace, normalize_workspace};
-use crate::types::{
-    AgentKind, HostRecord, Readiness, Replacement, RoomRecord, SeatRecord, SeatStatus,
-};
-
-const DEFAULT_ROOM_SIZE: usize = 3;
-const MAX_ROOM_SIZE: usize = 16;
+use crate::types::{AgentKind, HostRecord, Readiness, RoomRecord, SeatRecord, SeatStatus};
 
 impl ConferMcp {
     pub(super) fn create_room_inner(&self, args: CreateRoomArgs) -> Result<CreateRoomOutput> {
         let workspace = normalize_workspace(&args.workspace)?;
+        if args.target_size == Some(0) {
+            bail!("target_size must be positive");
+        }
+        let target_size = args.target_size.unwrap_or(0).max(args.seats.len());
+        if target_size == 0 {
+            bail!("provide target_size or at least one seat");
+        }
         let readiness = adapters::readiness();
         let host_agent = detect_host_agent(args.host_agent.as_deref());
-        let requested_size = args.target_size.unwrap_or(DEFAULT_ROOM_SIZE);
-        let target_size = requested_size.max(args.seats.len() + 1);
-        if !(2..=MAX_ROOM_SIZE).contains(&target_size) {
-            bail!("target_size must be between 2 and {MAX_ROOM_SIZE}");
-        }
-        let (seats, replacements) = select_seats(
+        let seats = select_seats(
             args.seats,
-            target_size - 1,
+            target_size,
             host_agent.as_deref(),
             &readiness,
+            HashSet::new(),
         )?;
         let now = timestamp();
         let id = uuid::Uuid::new_v4().to_string();
@@ -51,7 +49,6 @@ impl ConferMcp {
         Ok(CreateRoomOutput {
             room: room_view(&room),
             readiness,
-            replacements,
         })
     }
 
@@ -65,7 +62,7 @@ impl ConferMcp {
             .iter()
             .map(|seat| seat.name.clone())
             .collect::<HashSet<_>>();
-        let (mut seats, replacements) = select_seats_with_names(
+        let mut seats = select_seats(
             vec![args.seat],
             1,
             room.host.agent.as_deref(),
@@ -91,7 +88,6 @@ impl ConferMcp {
         Ok(AddSeatOutput {
             room: room_view(&room),
             readiness,
-            replacements,
         })
     }
 
@@ -163,37 +159,15 @@ fn select_seats(
     count: usize,
     host_agent: Option<&str>,
     readiness: &[Readiness],
-) -> Result<(Vec<SeatRecord>, Vec<Replacement>)> {
-    select_seats_with_names(requested, count, host_agent, readiness, HashSet::new())
-}
-
-fn select_seats_with_names(
-    requested: Vec<SeatSpecInput>,
-    count: usize,
-    host_agent: Option<&str>,
-    readiness: &[Readiness],
     mut names: HashSet<String>,
-) -> Result<(Vec<SeatRecord>, Vec<Replacement>)> {
-    let ready = readiness
+) -> Result<Vec<SeatRecord>> {
+    let mut preferred = readiness
         .iter()
         .filter(|item| item.locally_ready)
         .map(|item| item.agent)
         .collect::<Vec<_>>();
-    if ready.is_empty() {
-        bail!("no locally ready supported agents were found");
-    }
     let host_kind = host_agent.and_then(AgentKind::parse);
-    let mut preferred = ready
-        .iter()
-        .copied()
-        .filter(|agent| Some(*agent) != host_kind)
-        .collect::<Vec<_>>();
-    preferred.extend(
-        ready
-            .iter()
-            .copied()
-            .filter(|agent| Some(*agent) == host_kind),
-    );
+    preferred.sort_by_key(|agent| Some(*agent) == host_kind);
     let mut specs = requested;
     while specs.len() < count {
         specs.push(SeatSpecInput {
@@ -205,7 +179,6 @@ fn select_seats_with_names(
         });
     }
     let mut seats = Vec::with_capacity(specs.len());
-    let mut replacements = Vec::new();
     for (index, spec) in specs.into_iter().enumerate() {
         let requested_agent = spec
             .agent
@@ -215,8 +188,22 @@ fn select_seats_with_names(
             })
             .transpose()?;
         let selected = match requested_agent {
-            Some(agent) if ready.contains(&agent) => agent,
-            Some(_) => preferred[index % preferred.len()],
+            Some(agent) if preferred.contains(&agent) => agent,
+            Some(agent) => {
+                let reason = readiness
+                    .iter()
+                    .find(|item| item.agent == agent)
+                    .and_then(|item| item.reason.as_deref())
+                    .unwrap_or("agent is not locally ready");
+                bail!(
+                    "agent '{}' for seat '{}' is not locally ready: {reason}",
+                    agent.id(),
+                    spec.name.as_deref().unwrap_or(agent.id())
+                );
+            }
+            None if preferred.is_empty() => {
+                bail!("no locally ready supported agents were found");
+            }
             None => preferred[index % preferred.len()],
         };
         let mut name = spec
@@ -238,19 +225,8 @@ fn select_seats_with_names(
             }
         }
         names.insert(name.clone());
-        let replaced = requested_agent.is_some_and(|agent| agent != selected);
-        if let Some(requested_agent) = requested_agent
-            && replaced
-        {
-            replacements.push(Replacement {
-                seat_name: name.clone(),
-                requested_agent: requested_agent.id().into(),
-                replacement_agent: selected.id().into(),
-                reason: "requested agent is not locally ready".into(),
-            });
-        }
-        let model = (!replaced).then_some(spec.model).flatten();
-        let reasoning_effort = (!replaced).then_some(spec.reasoning_effort).flatten();
+        let model = spec.model;
+        let reasoning_effort = spec.reasoning_effort;
         adapters::validate_seat_config(selected, model.as_deref(), reasoning_effort.as_deref())?;
         seats.push(SeatRecord {
             id: uuid::Uuid::new_v4().to_string(),
@@ -263,7 +239,7 @@ fn select_seats_with_names(
             status: SeatStatus::Active,
         });
     }
-    Ok((seats, replacements))
+    Ok(seats)
 }
 
 fn detect_host_agent(explicit: Option<&str>) -> Option<String> {
@@ -298,12 +274,13 @@ fn normalized_name(name: Option<&str>, id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{select_seats, select_seats_with_names};
+    use super::select_seats;
     use crate::mcp::ConferMcp;
     use crate::mcp::api::{RetireSeatArgs, SeatSpecInput};
     use crate::mcp::delivery::DeliveryRuntime;
     use crate::state::StateStore;
     use crate::types::{AgentKind, HostRecord, Readiness, RoomRecord, SeatRecord, SeatStatus};
+    use std::collections::HashSet;
 
     fn ready(agent: AgentKind) -> Readiness {
         Readiness {
@@ -337,33 +314,52 @@ mod tests {
     }
 
     #[test]
-    fn default_room_prefers_agents_other_than_host() {
+    fn automatic_seats_prefer_other_agents_and_repeat_with_unique_addresses() {
         let readiness = vec![
             ready(AgentKind::Claude),
             ready(AgentKind::Codex),
             ready(AgentKind::Grok),
         ];
-        let (seats, replacements) = select_seats(Vec::new(), 2, Some("codex"), &readiness).unwrap();
+        let seats =
+            select_seats(Vec::new(), 20, Some("codex"), &readiness, HashSet::new()).unwrap();
+        assert_eq!(seats.len(), 20);
         assert_eq!(seats[0].agent, AgentKind::Claude);
         assert_eq!(seats[1].agent, AgentKind::Grok);
-        assert!(replacements.is_empty());
+        assert_eq!(seats[2].agent, AgentKind::Codex);
+        assert_eq!(seats[3].agent, AgentKind::Claude);
+        assert_eq!(
+            seats
+                .iter()
+                .map(|seat| &seat.id)
+                .collect::<HashSet<_>>()
+                .len(),
+            seats.len()
+        );
+        assert_eq!(
+            seats
+                .iter()
+                .map(|seat| &seat.name)
+                .collect::<HashSet<_>>()
+                .len(),
+            seats.len()
+        );
     }
 
     #[test]
-    fn unavailable_requested_agent_is_reported_and_replaced() {
-        let request = SeatSpecInput {
-            agent: Some("cursor".into()),
-            model: Some("cursor-model".into()),
-            reasoning_effort: Some("high".into()),
-            name: Some("reviewer".into()),
-            instructions: Some("Review only".into()),
-        };
-        let (seats, replacements) =
-            select_seats(vec![request], 1, Some("codex"), &[ready(AgentKind::Claude)]).unwrap();
-        assert_eq!(seats[0].agent, AgentKind::Claude);
-        assert!(seats[0].model.is_none());
-        assert_eq!(replacements.len(), 1);
-        assert_eq!(replacements[0].seat_name, "reviewer");
+    fn unavailable_requested_agent_fails_even_when_an_alternative_is_ready() {
+        for readiness in [vec![ready(AgentKind::Claude)], Vec::new()] {
+            let request = SeatSpecInput {
+                agent: Some("cursor".into()),
+                model: Some("cursor-model".into()),
+                reasoning_effort: Some("high".into()),
+                name: Some("reviewer".into()),
+                instructions: Some("Review only".into()),
+            };
+            assert!(
+                select_seats(vec![request], 1, Some("codex"), &readiness, HashSet::new()).is_err()
+            );
+        }
+        assert!(select_seats(Vec::new(), 1, None, &[], HashSet::new()).is_err());
     }
 
     #[test]
@@ -376,7 +372,7 @@ mod tests {
             name: None,
             instructions: None,
         };
-        let (seats, _) = select_seats_with_names(
+        let seats = select_seats(
             vec![request],
             1,
             Some("codex"),
@@ -390,25 +386,34 @@ mod tests {
     }
 
     #[test]
-    fn replacement_names_the_added_seat() {
-        let names = ["claude".to_string()].into_iter().collect();
-        let request = SeatSpecInput {
-            agent: Some("cursor".into()),
-            model: None,
-            reasoning_effort: None,
-            name: None,
-            instructions: None,
-        };
-        let (seats, replacements) = select_seats_with_names(
-            vec![request],
+    fn identical_configurations_create_separate_seats() {
+        let requests = (0..2)
+            .map(|_| SeatSpecInput {
+                agent: Some("claude".into()),
+                model: Some("sonnet".into()),
+                reasoning_effort: Some("high".into()),
+                name: None,
+                instructions: Some("Review only".into()),
+            })
+            .collect();
+        let seats = select_seats(
+            requests,
             1,
-            Some("codex"),
+            Some("claude"),
             &[ready(AgentKind::Claude)],
-            names,
+            HashSet::new(),
         )
         .unwrap();
-
-        assert_eq!(replacements[0].seat_name, seats[0].name);
+        assert_eq!(seats.len(), 2);
+        assert_ne!(seats[0].id, seats[1].id);
+        assert_ne!(seats[0].name, seats[1].name);
+        for seat in seats {
+            assert_eq!(seat.agent, AgentKind::Claude);
+            assert_eq!(seat.model.as_deref(), Some("sonnet"));
+            assert_eq!(seat.reasoning_effort.as_deref(), Some("high"));
+            assert_eq!(seat.instructions.as_deref(), Some("Review only"));
+            assert!(seat.native_session_id.is_none());
+        }
     }
 
     #[test]
@@ -426,22 +431,8 @@ mod tests {
                 name: None,
                 instructions: None,
             };
-            assert!(select_seats(vec![request], 1, None, &[ready(agent)]).is_err());
+            assert!(select_seats(vec![request], 1, None, &[ready(agent)], HashSet::new()).is_err());
         }
-        let request = SeatSpecInput {
-            agent: Some("cursor".into()),
-            model: Some("model[effort".into()),
-            reasoning_effort: Some("invalid".into()),
-            name: None,
-            instructions: Some("Review only".into()),
-        };
-        let (seats, replacements) =
-            select_seats(vec![request], 1, None, &[ready(AgentKind::Claude)]).unwrap();
-        assert_eq!(replacements.len(), 1);
-        assert_eq!(seats[0].agent, AgentKind::Claude);
-        assert!(seats[0].model.is_none());
-        assert!(seats[0].reasoning_effort.is_none());
-        assert_eq!(seats[0].instructions.as_deref(), Some("Review only"));
     }
 
     #[tokio::test]
