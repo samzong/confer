@@ -53,3 +53,4 @@ push-remote = "origin"
 pre-release-commit-message = "chore(release): bump to v{{version}}"
 tag-message = "v{{version}}"
 tag-name = "v{{version}}"
+pre-release-hook = ["scripts/regenerate-changelog", "{{version}}"]
