@@ -45,3 +45,11 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[package.metadata.release]
+publish = false
+verify = false
+push-remote = "origin"
+pre-release-commit-message = "chore(release): bump to v{{version}}"
+tag-message = "v{{version}}"
+tag-name = "v{{version}}"
