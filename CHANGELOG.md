@@ -1,6 +1,14 @@
 # Changelog
 
 
+## [0.2.1](https://github.com/samzong/confer/compare/v0.2.0...v0.2.1) (2026-09-07)
+
+
+### Features
+
+* store room state under XDG_STATE_HOME ([#5](https://github.com/samzong/confer/issues/5))
+
+
 ## [0.2.0](https://github.com/samzong/confer/compare/v0.1.0...v0.2.0) (2026-09-06)
 
 
