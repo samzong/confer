@@ -82,7 +82,7 @@ pub(crate) fn check_readiness(agent: AgentKind) -> Readiness {
 pub(crate) fn reserve_session(agent: AgentKind) -> Option<String> {
     match agent {
         AgentKind::Claude | AgentKind::Grok => Some(uuid::Uuid::new_v4().to_string()),
-        AgentKind::Codex | AgentKind::Cursor | AgentKind::Agy => None,
+        AgentKind::Codex | AgentKind::Cursor | AgentKind::Agy | AgentKind::Copilot => None,
     }
 }
 
@@ -91,7 +91,7 @@ pub(crate) async fn run(invocation: Invocation) -> AdapterOutput {
         return AdapterOutput::failed(error.to_string());
     }
     match invocation.agent {
-        AgentKind::Grok | AgentKind::Cursor => native::run(invocation).await,
+        AgentKind::Grok | AgentKind::Cursor | AgentKind::Copilot => native::run(invocation).await,
         _ => bridge::run(invocation).await,
     }
 }
@@ -332,6 +332,12 @@ pub(crate) fn validate_seat_config(
     {
         bail!("unsupported Antigravity reasoning_effort '{effort}'");
     }
+    if agent == AgentKind::Copilot
+        && let Some(effort) = effort
+        && !["none", "minimal", "low", "medium", "high", "xhigh", "max"].contains(&effort)
+    {
+        bail!("unsupported Copilot reasoning_effort '{effort}'");
+    }
     if agent == AgentKind::Cursor {
         cursor_config(model, effort)?;
     }
@@ -423,7 +429,7 @@ fn build_command(invocation: &Invocation, prompt: &str) -> Result<Command> {
                 command.args(["--effort", effort]);
             }
         }
-        AgentKind::Codex | AgentKind::Grok | AgentKind::Cursor => {
+        AgentKind::Codex | AgentKind::Grok | AgentKind::Cursor | AgentKind::Copilot => {
             bail!("agent requires its ACP transport")
         }
     }
@@ -482,6 +488,14 @@ fn has_local_auth_marker(agent: AgentKind) -> bool {
         AgentKind::Cursor => std::env::var_os("CURSOR_API_KEY").is_some(),
         AgentKind::Grok => std::env::var_os("XAI_API_KEY").is_some(),
         AgentKind::Agy => false,
+        AgentKind::Copilot => [
+            "COPILOT_GITHUB_TOKEN",
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "COPILOT_PROVIDER_BASE_URL",
+        ]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty())),
     };
     if env_ready {
         return true;
@@ -509,8 +523,18 @@ fn has_local_auth_marker(agent: AgentKind) -> bool {
                 .join("antigravity-cli")
                 .join("installation_id"),
         ],
+        // Copilot keeps its login token in the OS credential store, so the
+        // managed config file written on first launch is the local marker.
+        AgentKind::Copilot => vec![copilot_home(&home).join("config.json")],
     };
     markers.iter().any(|marker| marker.is_file())
+}
+
+fn copilot_home(home: &Path) -> PathBuf {
+    std::env::var_os("COPILOT_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".copilot"))
 }
 
 fn extract_session_id(value: &Value) -> Option<String> {
@@ -676,6 +700,11 @@ fn redact_secrets(value: &str) -> String {
         "OPENAI_API_KEY",
         "CURSOR_API_KEY",
         "XAI_API_KEY",
+        "COPILOT_GITHUB_TOKEN",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "COPILOT_PROVIDER_API_KEY",
+        "COPILOT_PROVIDER_BEARER_TOKEN",
     ] {
         if let Ok(secret) = std::env::var(name)
             && !secret.is_empty()
@@ -793,6 +822,38 @@ mod tests {
             first_message: false,
         };
         assert!(super::validate_invocation(&invocation).is_err());
+    }
+
+    #[test]
+    fn copilot_accepts_only_its_native_effort_levels() {
+        for (effort, valid) in [
+            ("none", true),
+            ("minimal", true),
+            ("xhigh", true),
+            ("max", true),
+            ("ultra", false),
+            ("extreme", false),
+        ] {
+            let result = super::validate_seat_config(AgentKind::Copilot, None, Some(effort));
+            assert_eq!(result.is_ok(), valid, "{effort}: {result:?}");
+        }
+        assert!(
+            super::build_command(
+                &Invocation {
+                    agent: AgentKind::Copilot,
+                    executable: PathBuf::from("copilot"),
+                    workspace: PathBuf::from("/workspace"),
+                    native_session_id: None,
+                    model: None,
+                    reasoning_effort: None,
+                    instructions: None,
+                    message: "test".into(),
+                    first_message: true,
+                },
+                "prompt"
+            )
+            .is_err()
+        );
     }
 
     #[test]

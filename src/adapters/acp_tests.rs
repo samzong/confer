@@ -464,3 +464,157 @@ async fn cursor_negotiates_parameterized_model_configuration() {
         server.await.unwrap().unwrap();
     }
 }
+
+#[tokio::test]
+async fn copilot_applies_model_and_effort_through_config_options() {
+    for (first_message, model, effort) in [
+        (true, Some("gpt-5.4"), Some("high")),
+        (false, Some("gpt-5.4"), None),
+        (false, None, Some("low")),
+        (true, None, None),
+    ] {
+        let mut invocation = invocation(first_message);
+        invocation.agent = AgentKind::Copilot;
+        invocation.model = model.map(str::to_owned);
+        invocation.reasoning_effort = effort.map(str::to_owned);
+        super::validate_invocation(&invocation).unwrap();
+        let expected = model
+            .map(|model| (json!("model"), json!(model)))
+            .into_iter()
+            .chain(effort.map(|effort| (json!("reasoning_effort"), json!(effort))))
+            .collect::<Vec<_>>();
+        let (client, server) = Channel::duplex();
+        let configured = Arc::new(Mutex::new(Vec::new()));
+        let server = tokio::spawn(async move {
+            Agent
+                .builder()
+                .on_receive_request(
+                    async move |request: UntypedMessage, responder, cx| {
+                        let params = request.params();
+                        match request.method() {
+                            "initialize" => responder.respond(json!({
+                                "protocolVersion":1,
+                                "agentCapabilities":{
+                                    "loadSession":true,
+                                    "sessionCapabilities":{"close":{}}
+                                }
+                            })),
+                            "session/new" => {
+                                assert!(first_message);
+                                responder.respond(json!({
+                                    "sessionId":"native-session",
+                                    "configOptions":[{"type":"select","id":"allow_all","currentValue":"on","options":[]}]
+                                }))
+                            }
+                            "session/load" => {
+                                assert!(!first_message);
+                                assert_eq!(params["sessionId"], "native-session");
+                                cx.send_notification(message("previous answer"))?;
+                                responder.respond(json!({}))
+                            }
+                            "session/set_config_option" => {
+                                assert_eq!(params["sessionId"], "native-session");
+                                configured
+                                    .lock()
+                                    .unwrap()
+                                    .push((params["configId"].clone(), params["value"].clone()));
+                                responder.respond(json!({"configOptions":[]}))
+                            }
+                            "session/prompt" => {
+                                assert_eq!(*configured.lock().unwrap(), expected);
+                                cx.send_notification(message("configured answer"))?;
+                                responder.respond(json!({"stopReason":"end_turn"}))
+                            }
+                            "session/close" => responder.respond(json!({})),
+                            _ => responder.respond_with_error(Error::method_not_found()),
+                        }
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .connect_to(server)
+                .await
+        });
+        let output = tokio::time::timeout(
+            Duration::from_secs(5),
+            acp::run_connection(client, invocation, true),
+        )
+        .await
+        .expect("Copilot setup and configuration must terminate");
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        assert!(output.error.is_none(), "{output:?}");
+        assert_eq!(output.answer.as_deref(), Some("configured answer"));
+        assert_eq!(
+            output.observed_session_id.as_deref(),
+            Some("native-session")
+        );
+    }
+}
+
+#[tokio::test]
+async fn configuration_failure_before_the_prompt_records_no_native_session() {
+    let mut invocation = invocation(true);
+    invocation.agent = AgentKind::Copilot;
+    invocation.model = Some("gpt-5.4".into());
+    invocation.reasoning_effort = Some("low".into());
+    let (client, server) = Channel::duplex();
+    let prompted = Arc::new(Mutex::new(false));
+    let server_prompted = prompted.clone();
+    let server = tokio::spawn(async move {
+        Agent
+            .builder()
+            .on_receive_request(
+                async move |request: UntypedMessage, responder, _cx| match request.method() {
+                    "initialize" => responder.respond(json!({
+                        "protocolVersion":1,
+                        "agentCapabilities":{"loadSession":true,"sessionCapabilities":{"close":{}}}
+                    })),
+                    "session/new" => responder.respond(json!({"sessionId":"unprompted-session"})),
+                    "session/set_config_option" => {
+                        if request.params()["configId"] == "model" {
+                            responder.respond(json!({"configOptions":[]}))
+                        } else {
+                            responder.respond_with_error(Error::new(
+                                -32602,
+                                "The selected model does not support reasoning_effort configuration.",
+                            ))
+                        }
+                    }
+                    "session/prompt" => {
+                        *server_prompted.lock().unwrap() = true;
+                        responder.respond(json!({"stopReason":"end_turn"}))
+                    }
+                    _ => responder.respond_with_error(Error::method_not_found()),
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .connect_to(server)
+            .await
+    });
+    let output = tokio::time::timeout(
+        Duration::from_secs(5),
+        acp::run_connection(client, invocation, true),
+    )
+    .await
+    .expect("failed configuration must terminate the connection");
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+
+    assert!(!*prompted.lock().unwrap());
+    assert!(output.observed_session_id.is_none(), "{output:?}");
+    assert!(output.answer.is_none());
+    assert!(
+        output
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("does not support reasoning_effort")),
+        "{output:?}"
+    );
+}

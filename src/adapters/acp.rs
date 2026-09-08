@@ -138,9 +138,6 @@ pub(super) async fn run_connection(
             };
             {
                 let mut output = state.lock().expect("ACP output lock");
-                if native {
-                    output.native_id = Some(session.to_string());
-                }
                 output.active_session = Some(session.to_string());
                 output.text.clear();
             }
@@ -157,6 +154,21 @@ pub(super) async fn run_connection(
                 for (id, value) in super::cursor_config(invocation.model.as_deref(), invocation.reasoning_effort.as_deref()).map_err(|error| Error::new(-32602, error.to_string()))? {
                     cx.send_request(SetSessionConfigOptionRequest::new(session.clone(), id.to_owned(), value)).block_task().await?;
                 }
+            }
+            if invocation.agent == AgentKind::Copilot {
+                // Copilot ignores its --model/--effort flags in ACP mode, and the
+                // reasoning_effort option only exists once the model supports it.
+                let model = invocation.model.as_deref().map(|model| ("model", model));
+                let effort = invocation.reasoning_effort.as_deref().map(|effort| ("reasoning_effort", effort));
+                for (id, value) in model.into_iter().chain(effort) {
+                    cx.send_request(SetSessionConfigOptionRequest::new(session.clone(), id.to_owned(), value)).block_task().await?;
+                }
+            }
+            // No native work can happen before the prompt, so a session whose
+            // configuration failed is not recorded; agents such as Copilot never
+            // persist a session that received no prompt.
+            if native {
+                state.lock().expect("ACP output lock").native_id = Some(session.to_string());
             }
 
             let response = cx
