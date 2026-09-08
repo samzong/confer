@@ -262,6 +262,9 @@ fn detect_host_agent(explicit: Option<&str>) -> Option<String> {
     if std::env::var_os("GROK_SESSION_ID").is_some() {
         return Some("grok".into());
     }
+    if std::env::var_os("COPILOT_AGENT_SESSION_ID").is_some() {
+        return Some("copilot".into());
+    }
     None
 }
 

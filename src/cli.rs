@@ -38,7 +38,7 @@ enum McpCommands {
     Install {
         #[arg(
             long = "agent",
-            help = "Target host: claude, codex, cursor, grok, or agy. Repeat for multiple hosts. Use '*' for all."
+            help = "Target host: claude, codex, cursor, grok, agy, or copilot. Repeat for multiple hosts. Use '*' for all."
         )]
         agents: Vec<String>,
         #[arg(long, help = "Print host changes without applying them")]
@@ -50,7 +50,7 @@ enum McpCommands {
     Uninstall {
         #[arg(
             long = "agent",
-            help = "Target host: claude, codex, cursor, grok, or agy. Repeat for multiple hosts. Use '*' for all."
+            help = "Target host: claude, codex, cursor, grok, agy, or copilot. Repeat for multiple hosts. Use '*' for all."
         )]
         agents: Vec<String>,
         #[arg(long, help = "Print host changes without applying them")]
@@ -66,7 +66,7 @@ enum SkillCommands {
         scope: Option<String>,
         #[arg(
             long = "agent",
-            help = "Target agent: claude, codex, cursor, grok, or agy. Repeat for multiple agents. Use '*' for all."
+            help = "Target agent: claude, codex, cursor, grok, agy, or copilot. Repeat for multiple agents. Use '*' for all."
         )]
         agents: Vec<String>,
         #[arg(long, help = "Show the Kitup install plan without writing")]
@@ -259,6 +259,16 @@ mod tests {
         assert_eq!(
             selected,
             kitup::AgentSelector::Explicit(vec!["antigravity-cli".into()])
+        );
+
+        let selected = supported_skill_agents(
+            kitup::AgentSelector::Explicit(vec!["copilot".into(), "github-copilot".into()]),
+            kitup::Scope::User,
+        )
+        .unwrap();
+        assert_eq!(
+            selected,
+            kitup::AgentSelector::Explicit(vec!["github-copilot".into()])
         );
     }
 

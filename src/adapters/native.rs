@@ -25,6 +25,9 @@ pub(super) async fn run(invocation: Invocation) -> AdapterOutput {
                 .arg(&invocation.workspace);
             command.arg("acp");
         }
+        AgentKind::Copilot => {
+            command.args(["--acp", "--allow-all"]);
+        }
         _ => return AdapterOutput::failed("agent has no native ACP transport".into()),
     }
     command

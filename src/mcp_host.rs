@@ -129,6 +129,14 @@ fn add_args(host: AgentKind, bin: &str) -> Option<Vec<String>> {
             bin.into(),
             SERVER_ARG.into(),
         ]),
+        AgentKind::Copilot => Some(vec![
+            "mcp".into(),
+            "add".into(),
+            SERVER_NAME.into(),
+            "--".into(),
+            bin.into(),
+            SERVER_ARG.into(),
+        ]),
     }
 }
 
@@ -151,6 +159,7 @@ fn remove_args(host: AgentKind) -> Option<Vec<String>> {
             SERVER_NAME.into(),
         ]),
         AgentKind::Agy => Some(vec!["mcp".into(), "remove".into(), SERVER_NAME.into()]),
+        AgentKind::Copilot => Some(vec!["mcp".into(), "remove".into(), SERVER_NAME.into()]),
     }
 }
 
@@ -500,6 +509,14 @@ mod tests {
         );
         assert_eq!(
             remove_args(AgentKind::Agy).unwrap(),
+            ["mcp", "remove", "confer"]
+        );
+        assert_eq!(
+            add_args(AgentKind::Copilot, "confer").unwrap(),
+            ["mcp", "add", "confer", "--", "confer", "mcp"]
+        );
+        assert_eq!(
+            remove_args(AgentKind::Copilot).unwrap(),
             ["mcp", "remove", "confer"]
         );
     }
