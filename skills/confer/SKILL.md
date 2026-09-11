@@ -1,6 +1,6 @@
 ---
 name: confer
-description: Coordinate Claude Code, Codex, Cursor Agent, Grok, Antigravity CLI, and GitHub Copilot CLI through private local MCP rooms. Trigger when the user asks to consult another agent, have multiple agents investigate independently, divide planning and implementation, compare answers, or request an independent review without copying between terminals.
+description: Coordinate Claude Code, Codex, Cursor Agent, Grok, Antigravity CLI, GitHub Copilot CLI, and Kimi Code through private local MCP rooms. Trigger when the user asks to consult another agent, have multiple agents investigate independently, divide planning and implementation, compare answers, or request an independent review without copying between terminals.
 ---
 
 # Confer
@@ -20,6 +20,10 @@ Honor explicit choices for agent, model, reasoning effort, participant count, ro
 - review needs a private session that has not seen the authoring answer, and research comparisons need blind seats before any critique round.
 
 Choose the number of execution seats from the task; there is no default count. Supply a positive `target_size`, explicit `seats`, or both. `target_size` excludes the host. Confer preserves explicit seats and automatically fills remaining positions, preferring agent types other than the host. The same agent, model, and reasoning effort may be used by multiple independent seats. Give seats short unique names and private instructions. Treat one room as one coordination context: add a new seat when a later phase needs another role, and retire a seat only after its delivery finishes and its role is complete.
+
+When the host is Kimi Code, pass `"host_agent": "kimi"` on create_room: confer's automatic host detection recognizes Claude, Codex, Cursor, Grok, and Copilot session markers, while Kimi Code and Antigravity expose no equivalent marker, so auto-detection would mislabel those hosts. Pass it explicitly whenever auto-detection may not identify the host, not only for Kimi.
+
+Kimi Code seats' `reasoning_effort` is thinking (`on` / `low` / `high` / `max`).
 
 ## Keep Seats Private
 

@@ -38,7 +38,7 @@ enum McpCommands {
     Install {
         #[arg(
             long = "agent",
-            help = "Target host: claude, codex, cursor, grok, agy, or copilot. Repeat for multiple hosts. Use '*' for all."
+            help = "Target host: claude, codex, cursor, grok, agy, copilot, or kimi. Repeat for multiple hosts. Use '*' for all."
         )]
         agents: Vec<String>,
         #[arg(long, help = "Print host changes without applying them")]
@@ -50,7 +50,7 @@ enum McpCommands {
     Uninstall {
         #[arg(
             long = "agent",
-            help = "Target host: claude, codex, cursor, grok, agy, or copilot. Repeat for multiple hosts. Use '*' for all."
+            help = "Target host: claude, codex, cursor, grok, agy, copilot, or kimi. Repeat for multiple hosts. Use '*' for all."
         )]
         agents: Vec<String>,
         #[arg(long, help = "Print host changes without applying them")]
@@ -66,7 +66,7 @@ enum SkillCommands {
         scope: Option<String>,
         #[arg(
             long = "agent",
-            help = "Target agent: claude, codex, cursor, grok, agy, or copilot. Repeat for multiple agents. Use '*' for all."
+            help = "Target agent: claude, codex, cursor, grok, agy, copilot, or kimi. Repeat for multiple agents. Use '*' for all."
         )]
         agents: Vec<String>,
         #[arg(long, help = "Show the Kitup install plan without writing")]
@@ -154,12 +154,22 @@ fn supported_skill_agents(
         .collect::<Vec<_>>();
     let selected = match selector {
         kitup::AgentSelector::Auto => {
-            kitup::detect_hosts(&kitup::BaseOptions::default(), Some(scope))
+            let mut detected = kitup::detect_hosts(&kitup::BaseOptions::default(), Some(scope))
                 .context("failed to detect local Skill hosts")?
                 .into_iter()
                 .map(|host| host.id)
                 .filter(|id| supported.contains(&id.as_str()))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            // kitup's kimi-cli detection only probes the default data root;
+            // a custom KIMI_CODE_HOME is invisible to it. Fall back to
+            // confer's own readiness check so auto selection still lists
+            // Kimi Code.
+            if !detected.iter().any(|id| id == "kimi-cli")
+                && crate::adapters::check_readiness(AgentKind::Kimi).locally_ready
+            {
+                detected.push("kimi-cli".into());
+            }
+            detected
         }
         kitup::AgentSelector::All => supported.iter().map(ToString::to_string).collect(),
         kitup::AgentSelector::Explicit(values) => {
@@ -269,6 +279,16 @@ mod tests {
         assert_eq!(
             selected,
             kitup::AgentSelector::Explicit(vec!["github-copilot".into()])
+        );
+
+        let selected = supported_skill_agents(
+            kitup::AgentSelector::Explicit(vec!["kimi".into(), "kimi-cli".into()]),
+            kitup::Scope::User,
+        )
+        .unwrap();
+        assert_eq!(
+            selected,
+            kitup::AgentSelector::Explicit(vec!["kimi-cli".into()])
         );
     }
 

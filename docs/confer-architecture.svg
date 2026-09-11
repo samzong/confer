@@ -60,7 +60,7 @@
 
   <rect x="365" y="184" width="570" height="48" rx="10" class="box" fill="#f6edf8" stroke="#8d58c7" stroke-dasharray="6 4"/>
   <text x="385" y="205" class="headingSmall">Seat adapters</text>
-  <text x="385" y="222" class="mono">Claude · Codex · Cursor · Grok · Antigravity · Copilot · agent types may repeat</text>
+  <text x="385" y="222" class="mono">Claude · Codex · Cursor · Grok · Antigravity · Copilot · Kimi · agent types may repeat</text>
 
   <rect x="540" y="260" width="220" height="84" rx="14" class="box" fill="#e9f4fb" stroke="#287bb5"/>
   <text x="650" y="289" class="heading" text-anchor="middle">Host</text>

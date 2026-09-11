@@ -164,6 +164,19 @@ pub(super) async fn run_connection(
                     cx.send_request(SetSessionConfigOptionRequest::new(session.clone(), id.to_owned(), value)).block_task().await?;
                 }
             }
+            if invocation.agent == AgentKind::Kimi {
+                // Unattended seats use ACP mode=auto. Model and thinking use
+                // the same config-option channel.
+                let mode = Some(("mode", "auto"));
+                let model = invocation.model.as_deref().map(|model| ("model", model));
+                let thinking = invocation
+                    .reasoning_effort
+                    .as_deref()
+                    .map(|effort| ("thinking", effort));
+                for (id, value) in mode.into_iter().chain(model).chain(thinking) {
+                    cx.send_request(SetSessionConfigOptionRequest::new(session.clone(), id.to_owned(), value)).block_task().await?;
+                }
+            }
             // No native work can happen before the prompt, so a session whose
             // configuration failed is not recorded; agents such as Copilot never
             // persist a session that received no prompt.

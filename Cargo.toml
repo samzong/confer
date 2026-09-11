@@ -54,3 +54,7 @@ pre-release-commit-message = "chore(release): bump to v{{version}}"
 tag-message = "v{{version}}"
 tag-name = "v{{version}}"
 pre-release-hook = ["scripts/regenerate-changelog", "{{version}}"]
+
+# Remove after the next kitup crates.io release (lathe-cli/kitup#41).
+[patch.crates-io]
+kitup = { git = "https://github.com/lathe-cli/kitup.git", branch = "main" }

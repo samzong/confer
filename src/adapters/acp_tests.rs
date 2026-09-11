@@ -556,6 +556,190 @@ async fn copilot_applies_model_and_effort_through_config_options() {
 }
 
 #[tokio::test]
+async fn kimi_sends_auto_mode_then_model_then_thinking() {
+    // Wire contract: mode=auto, then model, then thinking.
+    for (first_message, model, effort, thinking) in [
+        (true, Some("kimi-code/k3"), None, None),
+        (true, Some("kimi-code/k3"), Some("low"), Some("low")),
+        (true, Some("kimi-code/k3"), Some("high"), Some("high")),
+        (true, Some("kimi-code/k3"), Some("max"), Some("max")),
+        (true, Some("kimi-code/k3"), Some("on"), Some("on")),
+        (false, Some("kimi-code/kimi-for-coding"), Some("on"), Some("on")),
+    ] {
+        let mut invocation = invocation(first_message);
+        invocation.agent = AgentKind::Kimi;
+        invocation.model = model.map(str::to_owned);
+        invocation.reasoning_effort = effort.map(str::to_owned);
+        super::validate_invocation(&invocation).unwrap();
+        let expected = std::iter::once((json!("mode"), json!("auto")))
+            .chain(model.map(|model| (json!("model"), json!(model))))
+            .chain(thinking.map(|thinking| (json!("thinking"), json!(thinking))))
+            .collect::<Vec<_>>();
+        let (client, server) = Channel::duplex();
+        let configured = Arc::new(Mutex::new(Vec::new()));
+        let methods = Arc::new(Mutex::new(Vec::new()));
+        let seen_methods = methods.clone();
+        let server = tokio::spawn(async move {
+            Agent
+                .builder()
+                .on_receive_request(
+                    async move |request: UntypedMessage, responder, cx| {
+                        let params = request.params();
+                        methods.lock().unwrap().push(request.method().to_owned());
+                        match request.method() {
+                            "initialize" => responder.respond(json!({
+                                "protocolVersion":1,
+                                "agentCapabilities":{
+                                    "loadSession":true,
+                                    "sessionCapabilities":{"resume":{},"close":{}}
+                                }
+                            })),
+                            "session/new" => {
+                                assert!(first_message);
+                                responder.respond(json!({
+                                    "sessionId":"native-session",
+                                    "configOptions":[
+                                        {"type":"select","id":"thinking","currentValue":"on","options":[{"value":"on"}]},
+                                        {"type":"select","id":"mode","currentValue":"default"}
+                                    ]
+                                }))
+                            }
+                            "session/resume" => {
+                                assert!(!first_message);
+                                assert_eq!(params["sessionId"], "native-session");
+                                responder.respond(json!({}))
+                            }
+                            "session/load" => responder.respond_with_error(Error::method_not_found()),
+                            "session/set_config_option" => {
+                                assert_eq!(params["sessionId"], "native-session");
+                                assert_ne!(params["configId"], json!("yolo"));
+                                assert_ne!(params["value"], json!("yolo"));
+                                configured
+                                    .lock()
+                                    .unwrap()
+                                    .push((params["configId"].clone(), params["value"].clone()));
+                                responder.respond(json!({"configOptions":[]}))
+                            }
+                            "session/prompt" => {
+                                assert_eq!(*configured.lock().unwrap(), expected);
+                                assert_eq!(expected[0], (json!("mode"), json!("auto")));
+                                cx.send_notification(message("configured answer"))?;
+                                responder.respond(json!({"stopReason":"end_turn"}))
+                            }
+                            "session/close" => responder.respond(json!({})),
+                            _ => responder.respond_with_error(Error::method_not_found()),
+                        }
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .connect_to(server)
+                .await
+        });
+        let output = tokio::time::timeout(
+            Duration::from_secs(5),
+            acp::run_connection(client, invocation, true),
+        )
+        .await
+        .expect("Kimi setup and configuration must terminate");
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        assert!(output.error.is_none(), "{output:?}");
+        assert_eq!(output.answer.as_deref(), Some("configured answer"));
+        assert_eq!(
+            output.observed_session_id.as_deref(),
+            Some("native-session")
+        );
+        let seen = seen_methods.lock().unwrap().clone();
+        if first_message {
+            assert!(seen.iter().any(|m| m == "session/new"), "{seen:?}");
+            assert!(!seen.iter().any(|m| m == "session/resume"), "{seen:?}");
+        } else {
+            assert!(seen.iter().any(|m| m == "session/resume"), "{seen:?}");
+            assert!(!seen.iter().any(|m| m == "session/new"), "{seen:?}");
+            assert!(!seen.iter().any(|m| m == "session/load"), "{seen:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn kimi_unknown_thinking_fails_before_the_prompt() {
+    // A locally accepted level the session does not offer fails here.
+    let mut invocation = invocation(true);
+    invocation.agent = AgentKind::Kimi;
+    invocation.model = Some("kimi-code/kimi-for-coding".into());
+    invocation.reasoning_effort = Some("high".into());
+    super::validate_invocation(&invocation).unwrap();
+    let (client, server) = Channel::duplex();
+    let prompted = Arc::new(Mutex::new(false));
+    let server_prompted = prompted.clone();
+    let server = tokio::spawn(async move {
+        Agent
+            .builder()
+            .on_receive_request(
+                async move |request: UntypedMessage, responder, _cx| match request.method() {
+                    "initialize" => responder.respond(json!({
+                        "protocolVersion":1,
+                        "agentCapabilities":{
+                            "loadSession":true,
+                            "sessionCapabilities":{"resume":{},"close":{}}
+                        }
+                    })),
+                    "session/new" => responder.respond(json!({
+                        "sessionId":"unprompted-session",
+                        "configOptions":[
+                            {"type":"select","id":"thinking","currentValue":"on","options":[{"value":"on"}]}
+                        ]
+                    })),
+                    "session/set_config_option" => {
+                        if request.params()["configId"] == "thinking" {
+                            responder.respond_with_error(Error::new(
+                                -32602,
+                                "Invalid params: Unknown thinking value: high",
+                            ))
+                        } else {
+                            responder.respond(json!({"configOptions":[]}))
+                        }
+                    }
+                    "session/prompt" => {
+                        *server_prompted.lock().unwrap() = true;
+                        responder.respond(json!({"stopReason":"end_turn"}))
+                    }
+                    _ => responder.respond_with_error(Error::method_not_found()),
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .connect_to(server)
+            .await
+    });
+    let output = tokio::time::timeout(
+        Duration::from_secs(5),
+        acp::run_connection(client, invocation, true),
+    )
+    .await
+    .expect("rejected thinking must terminate the connection");
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+
+    assert!(!*prompted.lock().unwrap());
+    assert!(output.observed_session_id.is_none(), "{output:?}");
+    assert!(output.answer.is_none());
+    assert!(
+        output
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("Unknown thinking value")),
+        "{output:?}"
+    );
+}
+
+#[tokio::test]
 async fn configuration_failure_before_the_prompt_records_no_native_session() {
     let mut invocation = invocation(true);
     invocation.agent = AgentKind::Copilot;

@@ -426,6 +426,7 @@ mod tests {
             (AgentKind::Cursor, Some("model[effort"), None),
             (AgentKind::Claude, None, Some("invalid")),
             (AgentKind::Agy, None, Some("xhigh")),
+            (AgentKind::Kimi, None, Some("none")),
         ] {
             let request = SeatSpecInput {
                 agent: Some(agent.id().into()),
