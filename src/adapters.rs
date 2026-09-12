@@ -82,9 +82,11 @@ pub(crate) fn check_readiness(agent: AgentKind) -> Readiness {
 pub(crate) fn reserve_session(agent: AgentKind) -> Option<String> {
     match agent {
         AgentKind::Claude | AgentKind::Grok => Some(uuid::Uuid::new_v4().to_string()),
-        AgentKind::Codex | AgentKind::Cursor | AgentKind::Agy | AgentKind::Copilot | AgentKind::Kimi => {
-            None
-        }
+        AgentKind::Codex
+        | AgentKind::Cursor
+        | AgentKind::Agy
+        | AgentKind::Copilot
+        | AgentKind::Kimi => None,
     }
 }
 
@@ -442,7 +444,11 @@ fn build_command(invocation: &Invocation, prompt: &str) -> Result<Command> {
                 command.args(["--effort", effort]);
             }
         }
-        AgentKind::Codex | AgentKind::Grok | AgentKind::Cursor | AgentKind::Copilot | AgentKind::Kimi => {
+        AgentKind::Codex
+        | AgentKind::Grok
+        | AgentKind::Cursor
+        | AgentKind::Copilot
+        | AgentKind::Kimi => {
             bail!("agent requires its ACP transport")
         }
     }
@@ -602,8 +608,7 @@ pub(crate) fn resolve_kimi_home(
                 // Kimi Code resolves a relative KIMI_CODE_HOME against the
                 // child's working directory; anchor it to confer's cwd so
                 // both sides mean the same data root.
-                let cwd =
-                    std::env::current_dir().context("cannot determine current directory")?;
+                let cwd = std::env::current_dir().context("cannot determine current directory")?;
                 Ok(cwd.join(dir))
             }
         }
@@ -1015,10 +1020,7 @@ mod tests {
         let error = build_command(&first, &super::prompt_text(&first))
             .unwrap_err()
             .to_string();
-        assert!(
-            error.contains("ACP transport"),
-            "{error}"
-        );
+        assert!(error.contains("ACP transport"), "{error}");
     }
 
     #[test]
@@ -1030,7 +1032,15 @@ mod tests {
                 "{effort:?}"
             );
         }
-        for effort in ["none", "off", "medium", "minimal", "xhigh", "ultra", "not-a-level"] {
+        for effort in [
+            "none",
+            "off",
+            "medium",
+            "minimal",
+            "xhigh",
+            "ultra",
+            "not-a-level",
+        ] {
             assert!(
                 super::validate_seat_config(AgentKind::Kimi, None, Some(effort)).is_err(),
                 "{effort}"

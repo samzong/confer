@@ -72,11 +72,9 @@ fn apply_native_args(invocation: &Invocation, command: &mut Command) -> Result<(
         AgentKind::Kimi => {
             // Pin the data root so readiness, MCP registration, and the
             // ACP child agree even when KIMI_CODE_HOME is unset or relative.
-            let kimi_home = super::resolve_kimi_home(
-                std::env::var_os("KIMI_CODE_HOME"),
-                dirs::home_dir(),
-            )
-            .map_err(|error| error.to_string())?;
+            let kimi_home =
+                super::resolve_kimi_home(std::env::var_os("KIMI_CODE_HOME"), dirs::home_dir())
+                    .map_err(|error| error.to_string())?;
             command.env("KIMI_CODE_HOME", &kimi_home);
             command.arg("acp");
         }

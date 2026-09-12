@@ -564,7 +564,12 @@ async fn kimi_sends_auto_mode_then_model_then_thinking() {
         (true, Some("kimi-code/k3"), Some("high"), Some("high")),
         (true, Some("kimi-code/k3"), Some("max"), Some("max")),
         (true, Some("kimi-code/k3"), Some("on"), Some("on")),
-        (false, Some("kimi-code/kimi-for-coding"), Some("on"), Some("on")),
+        (
+            false,
+            Some("kimi-code/kimi-for-coding"),
+            Some("on"),
+            Some("on"),
+        ),
     ] {
         let mut invocation = invocation(first_message);
         invocation.agent = AgentKind::Kimi;

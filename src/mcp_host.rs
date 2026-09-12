@@ -316,10 +316,11 @@ fn mcp_config_path(host: AgentKind) -> Result<PathBuf> {
         AgentKind::Cursor => Ok(dirs::home_dir()
             .context("cannot determine home directory")?
             .join(".cursor/mcp.json")),
-        AgentKind::Kimi => Ok(
-            crate::adapters::resolve_kimi_home(std::env::var_os("KIMI_CODE_HOME"), dirs::home_dir())?
-                .join("mcp.json"),
-        ),
+        AgentKind::Kimi => Ok(crate::adapters::resolve_kimi_home(
+            std::env::var_os("KIMI_CODE_HOME"),
+            dirs::home_dir(),
+        )?
+        .join("mcp.json")),
         _ => bail!("{} does not use an MCP config file", host.id()),
     }
 }
@@ -333,13 +334,21 @@ fn write_mcp_config(host: AgentKind, path: &Path, bin: &str) -> Result<()> {
                     .or_insert_with(|| Value::Object(Map::new()))
                     .as_object_mut()
             })
-            .with_context(|| format!("invalid {} MCP config: mcpServers must be an object", host.id()))?;
+            .with_context(|| {
+                format!(
+                    "invalid {} MCP config: mcpServers must be an object",
+                    host.id()
+                )
+            })?;
         let entry = servers
             .entry(SERVER_NAME)
             .or_insert_with(|| Value::Object(Map::new()))
             .as_object_mut()
             .with_context(|| {
-                format!("invalid {} MCP config: mcpServers.confer must be an object", host.id())
+                format!(
+                    "invalid {} MCP config: mcpServers.confer must be an object",
+                    host.id()
+                )
             })?;
         if uses_non_stdio_transport(entry) {
             bail!(
