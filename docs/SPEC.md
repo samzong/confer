@@ -18,8 +18,9 @@ The supported products can act as external room participants and as MCP hosts:
 | `grok` | Grok Build | `grok` | native `grok mcp` command |
 | `agy` | Antigravity CLI | `agy` | native `agy mcp` command |
 | `copilot` | GitHub Copilot CLI | `copilot` | native `copilot mcp` command |
+| `kimi` | Kimi Code | `kimi` | `$KIMI_CODE_HOME/mcp.json` (default `~/.kimi-code/mcp.json`) |
 
-MCP is the public protocol. Every seat uses an ACP v1 lifecycle internally. Cursor, Grok, and Copilot use native ACP over stdio; Codex uses an in-process ACP bridge to its app-server; Claude and Antigravity use in-process ACP bridges to their native headless commands. Confer ships one Rust binary and requires no separate bridge runtime.
+MCP is the public protocol. Every seat uses an ACP v1 lifecycle internally. Cursor, Grok, Copilot, and Kimi Code use native ACP over stdio; Codex uses an in-process ACP bridge to its app-server; Claude and Antigravity use in-process ACP bridges to their native headless commands. Confer ships one Rust binary and requires no separate bridge runtime.
 
 ## Room model
 
@@ -81,7 +82,7 @@ Room metadata writes use a short advisory lock and atomic replacement. Current w
 
 Readiness checks are local and run when a room is created, when a seat is added, and before each delivery starts. They inspect the executable and local authentication or configuration state without calling a model or checking quota. A positive result means `locally_ready`; it does not guarantee provider availability, model access, or remaining quota.
 
-Creation and seat addition validate the final selected agent's deterministic configuration before saving any room change. Delivery uses the same validation. Malformed Cursor model options, conflicting option sources, and unsupported local effort values fail immediately. Model availability and provider-specific capabilities remain native runtime checks. Cursor accepts `reasoning_effort` without `model` and applies it to its configured default model; a default that does not support that effort returns a native error. Copilot applies `model` and then `reasoning_effort` through ACP session configuration options; a model or effort its session does not offer returns a native error.
+Creation and seat addition validate the final selected agent's deterministic configuration before saving any room change. Delivery uses the same validation. Malformed Cursor model options, conflicting option sources, and unsupported local effort values fail immediately. Model availability and provider-specific capabilities remain native runtime checks. Cursor accepts `reasoning_effort` without `model` and applies it to its configured default model; a default that does not support that effort returns a native error. Copilot applies `model` and then `reasoning_effort` through ACP session configuration options; a model or effort its session does not offer returns a native error. Kimi Code applies `model` and then `reasoning_effort` (`thinking`) through ACP session configuration options; a model or effort its session does not offer returns a native error.
 
 The host may specify all, some, or none of the seats. For unspecified agents and remaining target positions, Confer cycles through locally ready supported agents, placing agent types other than the known host first. Agent types may repeat; the host's agent type remains eligible. Explicit agent choices are honored.
 
@@ -164,13 +165,13 @@ confer skill install [--scope user|project] [--agent <id>]... [--dry-run] [--yes
 
 `confer mcp` serves stdio MCP. Room operations are not exposed as ordinary CLI commands.
 
-MCP and Skill installation are deliberately independent. `confer mcp install` never installs the Skill, and `confer skill install` never changes MCP configuration. Both installation commands support Claude Code, Codex, Cursor, Grok, Antigravity CLI, and GitHub Copilot CLI.
+MCP and Skill installation are deliberately independent. `confer mcp install` never installs the Skill, and `confer skill install` never changes MCP configuration. Both installation commands support Claude Code, Codex, Cursor, Grok, Antigravity CLI, GitHub Copilot CLI, and Kimi Code.
 
 `confer skill install` embeds the [canonical Skill](../skills/confer/SKILL.md) and delegates target paths, conflict protection, updates, scope, and dry-run reporting to Kitup. User scope is the default.
 
 `confer mcp install` follows each host’s supported registration mechanism. Repeated installation updates the Confer-owned registration without deleting unrelated MCP entries. Uninstall removes only the `confer` entry.
 
-Explicit `--agent cursor` registration and removal edit Cursor's MCP configuration without requiring the participant CLI on `PATH`. Default selection and `--agent '*'` still discover installed host executables; they do not create Cursor configuration on machines without its CLI. Other hosts require their native registration command. Registration does not establish participant readiness or authentication.
+Explicit `--agent cursor` and `--agent kimi` registration and removal edit that host's MCP configuration (Cursor's `~/.cursor/mcp.json`, Kimi Code's `$KIMI_CODE_HOME/mcp.json`, default `~/.kimi-code/mcp.json`) without requiring the participant CLI on `PATH`. Default selection and `--agent '*'` still discover installed host executables; they do not create MCP configuration on machines without its CLI. Other hosts require their native registration command. Registration does not establish participant readiness or authentication.
 
 ## Adapter contract
 
@@ -187,7 +188,7 @@ Every adapter must:
 
 Confer owns the FIFO Queue above every adapter. Each queued delivery opens one ACP connection, runs one native agent process, and resumes the seat's recorded native session when one exists. Session history replay is excluded from the current answer. After a terminal response, Confer closes the connection and reaps its child; a child that remains alive after three seconds is terminated. There is no idle process pool.
 
-Cursor seats use its ACP session store. Old headless Cursor session IDs are not migrated and require new seats. Copilot seats use its native session store through ACP `session/load`; replayed history is excluded from the current answer. Other native session stores are not rewritten. An observed session ID remains available when the prompt fails; a missing or stale ID never triggers silent replacement. A native ACP session whose model or effort configuration fails before its first prompt is not recorded, because no native work has started; the next message to that seat starts a new native session.
+Cursor seats use its ACP session store. Old headless Cursor session IDs are not migrated and require new seats. Copilot seats use its native session store through ACP `session/load`; replayed history is excluded from the current answer. Kimi Code seats use native ACP `session/resume`. Other native session stores are not rewritten. An observed session ID remains available when the prompt fails; a missing or stale ID never triggers silent replacement. A native ACP session whose model or effort configuration fails before its first prompt is not recorded, because no native work has started; the next message to that seat starts a new native session.
 
 Model and reasoning fields are requests to the native CLI. An unsupported value must produce a clear adapter error rather than silently selecting another model.
 
@@ -195,7 +196,7 @@ Model and reasoning fields are requests to the native CLI. An unsupported value 
 
 Confer uses the room workspace as each child process working directory. It does not create filesystem isolation. Independent seats may therefore read or modify the same files even when their messages are isolated.
 
-Confer launches every seat with that agent's full-permission setting so a non-interactive process is never blocked on an approval prompt it cannot answer: Claude and Antigravity receive `--dangerously-skip-permissions`; Codex receives app-server `approvalPolicy: never` and the full-access sandbox policy; Cursor receives `--trust --force`; Grok receives `--always-approve` and ACP `yoloMode`; and Copilot receives `--allow-all`. Seats therefore run with the authority of the local Confer process and without sandbox isolation. Explicit task instructions remain the only limit on what a seat is asked to do.
+Confer launches every seat with that agent's full-permission setting so a non-interactive process is never blocked on an approval prompt it cannot answer: Claude and Antigravity receive `--dangerously-skip-permissions`; Codex receives app-server `approvalPolicy: never` and the full-access sandbox policy; Cursor receives `--trust --force`; Grok receives `--always-approve` and ACP `yoloMode`; Copilot receives `--allow-all`; and Kimi Code receives ACP `mode=auto`. Seats therefore run with the authority of the local Confer process and without sandbox isolation. Explicit task instructions remain the only limit on what a seat is asked to do.
 
 ## Errors
 
