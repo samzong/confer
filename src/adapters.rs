@@ -559,12 +559,32 @@ fn has_local_auth_marker(agent: AgentKind) -> bool {
     markers.iter().any(|marker| marker.is_file())
 }
 
+#[derive(serde::Deserialize)]
+struct KimiConfig {
+    #[serde(default)]
+    providers: std::collections::BTreeMap<String, KimiProvider>,
+}
+
+#[derive(serde::Deserialize)]
+struct KimiProvider {
+    #[serde(default)]
+    api_key: Option<String>,
+    #[serde(default)]
+    env: std::collections::BTreeMap<String, toml::Value>,
+}
+
+impl KimiProvider {
+    fn has_credential(&self) -> bool {
+        if self.api_key.as_deref().is_some_and(|key| !key.is_empty()) {
+            return true;
+        }
+        self.env.iter().any(|(name, value)| {
+            name.ends_with("API_KEY") && value.as_str().is_some_and(|value| !value.is_empty())
+        })
+    }
+}
+
 fn kimi_home_has_auth(kimi_home: &Path) -> bool {
-    // OAuth tokens live in credentials/<profile>.json; API-key auth appears
-    // as a non-empty `api_key` entry in config.toml. Kimi Code writes
-    // config.toml (with empty api_key values) on first launch, before any
-    // login, so file existence alone is not an auth marker. Files under
-    // credentials/mcp/ are MCP server metadata, not credentials.
     let credentials = kimi_home.join("credentials");
     if let Ok(entries) = std::fs::read_dir(&credentials) {
         for entry in entries.flatten() {
@@ -577,15 +597,10 @@ fn kimi_home_has_auth(kimi_home: &Path) -> bool {
     let Ok(config) = std::fs::read_to_string(kimi_home.join("config.toml")) else {
         return false;
     };
-    config.lines().any(|line| {
-        let Some((key, value)) = line.trim().split_once('=') else {
-            return false;
-        };
-        if key.trim() != "api_key" {
-            return false;
-        }
-        !value.trim().trim_matches('"').trim().is_empty()
-    })
+    let Ok(config) = toml::from_str::<KimiConfig>(&config) else {
+        return false;
+    };
+    config.providers.values().any(KimiProvider::has_credential)
 }
 
 fn copilot_home(home: &Path) -> PathBuf {
@@ -1081,21 +1096,36 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
         assert!(!super::kimi_home_has_auth(home));
-        // First-launch config.toml carries empty api_key values; not auth.
         std::fs::write(
             home.join("config.toml"),
             "[providers.\"managed:kimi-code\"]\napi_key = \"\"\n",
         )
         .unwrap();
         assert!(!super::kimi_home_has_auth(home));
-        // A non-empty api_key entry counts.
+        std::fs::write(
+            home.join("config.toml"),
+            "[services.moonshot_search]\nbase_url = \"https://api.moonshot.cn/v1/search\"\napi_key = \"sk-search\"\n",
+        )
+        .unwrap();
+        assert!(!super::kimi_home_has_auth(home));
+        std::fs::write(
+            home.join("config.toml"),
+            "[providers.vertexai.env]\nGOOGLE_CLOUD_PROJECT = \"my-gcp-project\"\nGOOGLE_CLOUD_LOCATION = \"us-central1\"\n",
+        )
+        .unwrap();
+        assert!(!super::kimi_home_has_auth(home));
+        std::fs::write(
+            home.join("config.toml"),
+            "[providers.kimi.env]\nKIMI_API_KEY = \"sk-env\"\n",
+        )
+        .unwrap();
+        assert!(super::kimi_home_has_auth(home));
         std::fs::write(
             home.join("config.toml"),
             "[providers.custom]\ntype = \"openai\"\napi_key = \"sk-test\"\n",
         )
         .unwrap();
         assert!(super::kimi_home_has_auth(home));
-        // OAuth credential files count; MCP metadata under credentials/mcp/ does not.
         std::fs::remove_file(home.join("config.toml")).unwrap();
         std::fs::create_dir_all(home.join("credentials/mcp")).unwrap();
         std::fs::write(home.join("credentials/mcp/tool.json"), "{}").unwrap();
