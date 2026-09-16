@@ -11,7 +11,7 @@ use agent_client_protocol::{Agent, Channel, Error};
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use super::{AdapterOutput, Invocation, acp, codex, run_cli};
+use super::{AdapterOutput, Invocation, acp, cli, codex};
 use crate::types::AgentKind;
 
 pub(super) async fn run(invocation: Invocation) -> AdapterOutput {
@@ -126,7 +126,7 @@ async fn serve(channel: Channel, invocation: Invocation) -> Result<(), Error> {
                 };
                 let output = match invocation.agent {
                     AgentKind::Codex => codex::run(invocation, &prompt).await,
-                    _ => run_cli(invocation, &prompt).await,
+                    _ => cli::run(invocation, &prompt).await,
                 };
                 let meta = json!({"confer.nativeSessionId": output.observed_session_id});
                 if let Some(error) = output.error {

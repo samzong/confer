@@ -1,10 +1,11 @@
-use std::fs;
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+mod config;
+
+use config::{remove_mcp_config, write_mcp_config};
+
+use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use serde_json::{Map, Value};
 
 use crate::types::AgentKind;
 
@@ -69,100 +70,44 @@ fn resolve_bin(bin: Option<PathBuf>) -> Result<String> {
     if path.as_os_str().is_empty() {
         bail!("--bin must not be empty");
     }
-    if path.is_absolute() {
-        ensure_bin_file(&path)?;
+    if !path.is_absolute() && path.components().count() == 1 {
         return Ok(path.to_string_lossy().into_owned());
     }
-    if path.components().count() == 1 {
-        return Ok(path.to_string_lossy().into_owned());
-    }
-    let absolute = std::env::current_dir()
-        .context("failed to resolve current directory for --bin")?
-        .join(path);
-    ensure_bin_file(&absolute)?;
-    Ok(absolute.to_string_lossy().into_owned())
-}
-
-fn ensure_bin_file(path: &Path) -> Result<()> {
-    if path.is_file() {
-        Ok(())
+    let path = if path.is_absolute() {
+        path
     } else {
-        bail!("--bin {} is not a file", path.display())
+        std::env::current_dir()
+            .context("failed to resolve current directory for --bin")?
+            .join(path)
+    };
+    if !path.is_file() {
+        bail!("--bin {} is not a file", path.display());
     }
+    Ok(path.to_string_lossy().into_owned())
 }
 
-fn add_args(host: AgentKind, bin: &str) -> Option<Vec<String>> {
-    match host {
-        AgentKind::Claude => Some(vec![
-            "mcp".into(),
-            "add".into(),
-            "--scope".into(),
-            "user".into(),
-            SERVER_NAME.into(),
-            "--".into(),
-            bin.into(),
-            SERVER_ARG.into(),
-        ]),
-        AgentKind::Codex => Some(vec![
-            "mcp".into(),
-            "add".into(),
-            SERVER_NAME.into(),
-            "--".into(),
-            bin.into(),
-            SERVER_ARG.into(),
-        ]),
-        AgentKind::Cursor => None,
-        AgentKind::Grok => Some(vec![
-            "mcp".into(),
-            "add".into(),
-            "--scope".into(),
-            "user".into(),
-            SERVER_NAME.into(),
-            "--".into(),
-            bin.into(),
-            SERVER_ARG.into(),
-        ]),
-        AgentKind::Agy => Some(vec![
-            "mcp".into(),
-            "add".into(),
-            SERVER_NAME.into(),
-            bin.into(),
-            SERVER_ARG.into(),
-        ]),
-        AgentKind::Copilot => Some(vec![
-            "mcp".into(),
-            "add".into(),
-            SERVER_NAME.into(),
-            "--".into(),
-            bin.into(),
-            SERVER_ARG.into(),
-        ]),
-        AgentKind::Kimi => None,
-    }
+fn add_args(host: AgentKind, bin: &str) -> Option<Vec<&str>> {
+    let mut args = match host {
+        AgentKind::Claude | AgentKind::Grok => {
+            vec!["mcp", "add", "--scope", "user", SERVER_NAME, "--"]
+        }
+        AgentKind::Codex | AgentKind::Copilot => vec!["mcp", "add", SERVER_NAME, "--"],
+        AgentKind::Agy => vec!["mcp", "add", SERVER_NAME],
+        AgentKind::Cursor | AgentKind::Kimi => return None,
+    };
+    args.extend([bin, SERVER_ARG]);
+    Some(args)
 }
 
-fn remove_args(host: AgentKind) -> Option<Vec<String>> {
-    match host {
-        AgentKind::Claude => Some(vec![
-            "mcp".into(),
-            "remove".into(),
-            SERVER_NAME.into(),
-            "--scope".into(),
-            "user".into(),
-        ]),
-        AgentKind::Codex => Some(vec!["mcp".into(), "remove".into(), SERVER_NAME.into()]),
-        AgentKind::Cursor => None,
-        AgentKind::Grok => Some(vec![
-            "mcp".into(),
-            "remove".into(),
-            "--scope".into(),
-            "user".into(),
-            SERVER_NAME.into(),
-        ]),
-        AgentKind::Agy => Some(vec!["mcp".into(), "remove".into(), SERVER_NAME.into()]),
-        AgentKind::Copilot => Some(vec!["mcp".into(), "remove".into(), SERVER_NAME.into()]),
-        AgentKind::Kimi => None,
-    }
+fn remove_args(host: AgentKind) -> Option<Vec<&'static str>> {
+    Some(match host {
+        AgentKind::Claude => vec!["mcp", "remove", SERVER_NAME, "--scope", "user"],
+        AgentKind::Grok => vec!["mcp", "remove", "--scope", "user", SERVER_NAME],
+        AgentKind::Codex | AgentKind::Agy | AgentKind::Copilot => {
+            vec!["mcp", "remove", SERVER_NAME]
+        }
+        AgentKind::Cursor | AgentKind::Kimi => return None,
+    })
 }
 
 fn run_hosts(
@@ -212,64 +157,59 @@ fn apply_host(
     dry_run: bool,
     action: &HostAction,
 ) -> Result<()> {
-    match action {
-        HostAction::Install { bin } => match add_args(host, bin) {
-            Some(args) => {
-                let program = program.context("MCP host executable is not on PATH")?;
-                if matches!(
-                    run_host_command(program, &args, dry_run, false)?,
-                    HostCommandOutcome::AlreadyExists
-                ) {
-                    let remove = remove_args(host).with_context(|| {
-                        format!("{} has no native MCP remove command", host.id())
-                    })?;
-                    run_host_command(program, &remove, false, true)?;
-                    if matches!(
-                        run_host_command(program, &args, false, false)?,
-                        HostCommandOutcome::AlreadyExists
-                    ) {
-                        bail!(
-                            "{} MCP registration still exists after replacement",
-                            host.id()
-                        );
-                    }
-                }
-                Ok(())
+    let removing = matches!(action, HostAction::Uninstall);
+    let args = match action {
+        HostAction::Install { bin } => add_args(host, bin),
+        HostAction::Uninstall => remove_args(host),
+    };
+    if let Some(args) = args {
+        let program = program.context("MCP host executable is not on PATH")?;
+        if matches!(
+            run_host_command(program, &args, dry_run, removing)?,
+            HostCommandOutcome::AlreadyExists
+        ) {
+            run_host_command(
+                program,
+                &remove_args(host).context("missing native MCP remove command")?,
+                false,
+                true,
+            )?;
+            if matches!(
+                run_host_command(program, &args, false, false)?,
+                HostCommandOutcome::AlreadyExists
+            ) {
+                bail!(
+                    "{} MCP registration still exists after replacement",
+                    host.id()
+                );
             }
-            None => {
-                let path = mcp_config_path(host)?;
-                if dry_run {
-                    println!("write {} ({SERVER_NAME})", path.display());
-                } else {
-                    write_mcp_config(host, &path, bin)?;
-                    println!("installed {}", host.id());
-                }
-                Ok(())
+        }
+    } else {
+        let path = mcp_config_path(host)?;
+        if dry_run {
+            println!(
+                "{} {} ({SERVER_NAME})",
+                if removing { "remove" } else { "write" },
+                path.display()
+            );
+        } else {
+            match action {
+                HostAction::Install { bin } => write_mcp_config(host, &path, bin)?,
+                HostAction::Uninstall => remove_mcp_config(host, &path)?,
             }
-        },
-        HostAction::Uninstall => match remove_args(host) {
-            Some(args) => {
-                let program = program.context("MCP host executable is not on PATH")?;
-                run_host_command(program, &args, dry_run, true)?;
-                Ok(())
-            }
-            None => {
-                let path = mcp_config_path(host)?;
-                if dry_run {
-                    println!("remove {} ({SERVER_NAME})", path.display());
-                } else {
-                    remove_mcp_config(host, &path)?;
-                    println!("uninstalled {}", host.id());
-                }
-                Ok(())
-            }
-        },
+            println!(
+                "{} {}",
+                if removing { "uninstalled" } else { "installed" },
+                host.id()
+            );
+        }
     }
+    Ok(())
 }
 
 fn run_host_command(
     program: &str,
-    args: &[String],
+    args: &[&str],
     dry_run: bool,
     removing: bool,
 ) -> Result<HostCommandOutcome> {
@@ -325,157 +265,19 @@ fn mcp_config_path(host: AgentKind) -> Result<PathBuf> {
     }
 }
 
-fn write_mcp_config(host: AgentKind, path: &Path, bin: &str) -> Result<()> {
-    update_mcp_config(path, |config| {
-        let servers = config
-            .as_object_mut()
-            .and_then(|root| {
-                root.entry("mcpServers")
-                    .or_insert_with(|| Value::Object(Map::new()))
-                    .as_object_mut()
-            })
-            .with_context(|| {
-                format!(
-                    "invalid {} MCP config: mcpServers must be an object",
-                    host.id()
-                )
-            })?;
-        let entry = servers
-            .entry(SERVER_NAME)
-            .or_insert_with(|| Value::Object(Map::new()))
-            .as_object_mut()
-            .with_context(|| {
-                format!(
-                    "invalid {} MCP config: mcpServers.confer must be an object",
-                    host.id()
-                )
-            })?;
-        if uses_non_stdio_transport(entry) {
-            bail!(
-                "cannot install {} MCP config: existing confer entry uses a non-stdio transport",
-                host.id()
-            );
-        }
-        entry.insert("type".into(), Value::String("stdio".into()));
-        entry.insert("command".into(), Value::String(bin.into()));
-        entry.insert("args".into(), serde_json::json!([SERVER_ARG]));
-        Ok(())
-    })
-}
-
-fn remove_mcp_config(host: AgentKind, path: &Path) -> Result<()> {
-    if !path.is_file() {
-        return Ok(());
-    }
-    update_mcp_config(path, |config| {
-        if let Some(servers) = config.get_mut("mcpServers").and_then(Value::as_object_mut) {
-            if servers
-                .get(SERVER_NAME)
-                .and_then(Value::as_object)
-                .is_some_and(uses_non_stdio_transport)
-            {
-                bail!(
-                    "cannot uninstall {} MCP config: existing confer entry uses a non-stdio transport",
-                    host.id()
-                );
-            }
-            servers.remove(SERVER_NAME);
-        }
-        Ok(())
-    })
-}
-
-fn update_mcp_config(path: &Path, change: impl FnOnce(&mut Value) -> Result<()>) -> Result<()> {
-    let mut config = read_mcp_config(path)?;
-    change(&mut config)?;
-    write_mcp_config_file(path, &config)
-}
-
-fn read_mcp_config(path: &Path) -> Result<Value> {
-    match fs::read_to_string(path) {
-        Ok(body) if body.trim().is_empty() => Ok(serde_json::json!({ "mcpServers": {} })),
-        Ok(body) => serde_json::from_str(&body)
-            .with_context(|| format!("failed to parse {}", path.display())),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            Ok(serde_json::json!({ "mcpServers": {} }))
-        }
-        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
-    }
-}
-
-fn write_mcp_config_file(path: &Path, config: &Value) -> Result<()> {
-    let target = match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Some(
-            fs::canonicalize(path)
-                .with_context(|| format!("failed to resolve symbolic link {}", path.display()))?,
-        ),
-        Ok(_) => None,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => {
-            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
-        }
-    };
-    let path = target.as_deref().unwrap_or(path);
-    let parent = path
-        .parent()
-        .context("MCP config has no parent directory")?;
-    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent)
-        .with_context(|| format!("failed to create temporary file in {}", parent.display()))?;
-    let body = format!("{}\n", serde_json::to_string_pretty(config)?);
-    temp.write_all(body.as_bytes())
-        .context("failed to write MCP config")?;
-    temp.as_file()
-        .sync_all()
-        .context("failed to sync MCP config")?;
-    temp.persist(path)
-        .map_err(|error| error.error)
-        .with_context(|| format!("failed to replace {}", path.display()))?;
-    Ok(())
-}
-
-fn uses_non_stdio_transport(entry: &Map<String, Value>) -> bool {
-    entry.contains_key("url") || entry.get("type").is_some_and(|value| value != "stdio")
-}
-
 fn host_program(host: AgentKind) -> Option<String> {
-    let paths = std::env::var_os("PATH")?;
-    for directory in std::env::split_paths(&paths) {
-        for name in host.binary_names() {
-            let path = directory.join(name);
-            if executable_file(&path) {
-                return Some((*name).to_string());
-            }
-        }
-    }
-    None
+    crate::adapters::find_executable(host)?
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
 }
 
 fn supported_host_ids() -> String {
     AgentKind::ALL.map(AgentKind::id).join(", ")
 }
 
-#[cfg(unix)]
-fn executable_file(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    path.metadata()
-        .ok()
-        .is_some_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-}
-
-#[cfg(windows)]
-fn executable_file(path: &Path) -> bool {
-    path.is_file() || path.with_extension("exe").is_file()
-}
-
-#[cfg(not(any(unix, windows)))]
-fn executable_file(path: &Path) -> bool {
-    path.is_file()
-}
-
-fn display_command(program: &str, args: &[String]) -> String {
+fn display_command(program: &str, args: &[&str]) -> String {
     std::iter::once(program)
-        .chain(args.iter().map(String::as_str))
+        .chain(args.iter().copied())
         .map(quote_arg)
         .collect::<Vec<_>>()
         .join(" ")
@@ -512,80 +314,54 @@ fn looks_like_already_exists(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        add_args, read_mcp_config, remove_args, remove_mcp_config, uses_config_file,
-        write_mcp_config,
-    };
+    use super::config::read_mcp_config;
+    use super::{add_args, remove_args, uses_config_file};
     use crate::types::AgentKind;
 
     #[test]
     fn native_commands_match_host_contracts() {
-        assert_eq!(
-            add_args(AgentKind::Claude, "confer").unwrap(),
-            [
-                "mcp", "add", "--scope", "user", "confer", "--", "confer", "mcp"
-            ]
-        );
-        assert_eq!(
-            add_args(AgentKind::Grok, "confer").unwrap(),
-            [
-                "mcp", "add", "--scope", "user", "confer", "--", "confer", "mcp"
-            ]
-        );
-        assert_eq!(
-            add_args(AgentKind::Agy, "confer").unwrap(),
-            ["mcp", "add", "confer", "confer", "mcp"]
-        );
-        assert_eq!(
-            remove_args(AgentKind::Agy).unwrap(),
-            ["mcp", "remove", "confer"]
-        );
-        assert_eq!(
-            add_args(AgentKind::Copilot, "confer").unwrap(),
-            ["mcp", "add", "confer", "--", "confer", "mcp"]
-        );
-        assert_eq!(
-            remove_args(AgentKind::Copilot).unwrap(),
-            ["mcp", "remove", "confer"]
-        );
-        assert!(add_args(AgentKind::Cursor, "confer").is_none());
-        assert!(remove_args(AgentKind::Cursor).is_none());
-        assert!(add_args(AgentKind::Kimi, "confer").is_none());
-        assert!(remove_args(AgentKind::Kimi).is_none());
-        assert!(uses_config_file(AgentKind::Cursor));
-        assert!(uses_config_file(AgentKind::Kimi));
-        assert!(!uses_config_file(AgentKind::Claude));
-    }
-
-    #[test]
-    fn mcp_config_update_preserves_unrelated_entries() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("mcp.json");
-        std::fs::write(
-            &path,
-            r#"{"mcpServers":{"other":{"command":"other"},"confer":{"env":{"A":"B"}}}}"#,
-        )
-        .unwrap();
-        write_mcp_config(AgentKind::Cursor, &path, "/tmp/confer").unwrap();
-        let config = read_mcp_config(&path).unwrap();
-        assert_eq!(config["mcpServers"]["other"]["command"], "other");
-        assert_eq!(config["mcpServers"]["confer"]["env"]["A"], "B");
-        assert_eq!(config["mcpServers"]["confer"]["type"], "stdio");
-        assert_eq!(config["mcpServers"]["confer"]["command"], "/tmp/confer");
-        assert_eq!(
-            config["mcpServers"]["confer"]["args"],
-            serde_json::json!(["mcp"])
-        );
-        remove_mcp_config(AgentKind::Cursor, &path).unwrap();
-        assert_eq!(
-            read_mcp_config(&path).unwrap()["mcpServers"]["other"]["command"],
-            "other"
-        );
-        assert!(
-            read_mcp_config(&path).unwrap()["mcpServers"]
-                .get("confer")
-                .is_none()
-        );
+        for (host, add, remove) in [
+            (
+                AgentKind::Claude,
+                "mcp add --scope user confer -- confer mcp",
+                "mcp remove confer --scope user",
+            ),
+            (
+                AgentKind::Grok,
+                "mcp add --scope user confer -- confer mcp",
+                "mcp remove --scope user confer",
+            ),
+            (
+                AgentKind::Codex,
+                "mcp add confer -- confer mcp",
+                "mcp remove confer",
+            ),
+            (
+                AgentKind::Copilot,
+                "mcp add confer -- confer mcp",
+                "mcp remove confer",
+            ),
+            (
+                AgentKind::Agy,
+                "mcp add confer confer mcp",
+                "mcp remove confer",
+            ),
+        ] {
+            assert_eq!(
+                add_args(host, "confer").unwrap(),
+                add.split_whitespace().collect::<Vec<_>>()
+            );
+            assert_eq!(
+                remove_args(host).unwrap(),
+                remove.split_whitespace().collect::<Vec<_>>()
+            );
+            assert!(!uses_config_file(host));
+        }
+        for host in [AgentKind::Cursor, AgentKind::Kimi] {
+            assert!(add_args(host, "confer").is_none());
+            assert!(remove_args(host).is_none());
+            assert!(uses_config_file(host));
+        }
     }
 
     #[cfg(unix)]
@@ -650,9 +426,6 @@ mod tests {
                 .join(".kimi-code")
                 .join("mcp.json")
         );
-        // A custom KIMI_CODE_HOME redirects the config; a relative value
-        // anchors to the current directory. Safe: this test runs alone in
-        // the isolated re-invoked process, so no other thread reads env.
         let custom = isolated.join("custom-kimi-home");
         unsafe {
             std::env::set_var("KIMI_CODE_HOME", &custom);
@@ -672,7 +445,6 @@ mod tests {
             std::env::remove_var("KIMI_CODE_HOME");
         }
         let agents = ["cursor".into()];
-        let kimi_agents = ["kimi".into()];
         for dry_run in [true, false] {
             for selection in [vec![], vec!["*".into()], vec!["cursor".into(), "*".into()]] {
                 assert!(super::install(&selection, dry_run, None).is_err());
@@ -691,52 +463,28 @@ mod tests {
             assert!(!kimi_path.exists());
         }
 
-        super::install(&agents, true, None).unwrap();
-        super::uninstall(&agents, true).unwrap();
-        super::uninstall(&agents, false).unwrap();
-        assert!(!path.exists());
-        super::install(&agents, false, None).unwrap();
-        assert_eq!(
-            read_mcp_config(&path).unwrap()["mcpServers"]["confer"]["command"],
-            "confer"
-        );
-        let installed = std::fs::read(&path).unwrap();
-        super::install(&agents, true, Some("other-bin".into())).unwrap();
-        super::uninstall(&agents, true).unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), installed);
-        super::uninstall(&agents, false).unwrap();
-        assert!(
-            read_mcp_config(&path).unwrap()["mcpServers"]
-                .get("confer")
-                .is_none()
-        );
-        assert!(!crate::adapters::check_readiness(AgentKind::Cursor).locally_ready);
-
-        super::install(&kimi_agents, true, None).unwrap();
-        assert!(!kimi_path.exists());
-        super::install(&kimi_agents, false, None).unwrap();
-        assert_eq!(
-            read_mcp_config(&kimi_path).unwrap()["mcpServers"]["confer"]["command"],
-            "confer"
-        );
-        super::uninstall(&kimi_agents, false).unwrap();
-        assert!(
-            read_mcp_config(&kimi_path).unwrap()["mcpServers"]
-                .get("confer")
-                .is_none()
-        );
-        assert!(!crate::adapters::check_readiness(AgentKind::Kimi).locally_ready);
-    }
-
-    #[test]
-    fn mcp_config_update_accepts_empty_config_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("mcp.json");
-        std::fs::write(&path, " \n").unwrap();
-
-        write_mcp_config(AgentKind::Kimi, &path, "confer").unwrap();
-
-        let config = read_mcp_config(&path).unwrap();
-        assert_eq!(config["mcpServers"]["confer"]["command"], "confer");
+        for (host, path) in [(AgentKind::Cursor, path), (AgentKind::Kimi, kimi_path)] {
+            let agents = [host.id().into()];
+            super::install(&agents, true, None).unwrap();
+            super::uninstall(&agents, true).unwrap();
+            super::uninstall(&agents, false).unwrap();
+            assert!(!path.exists());
+            super::install(&agents, false, None).unwrap();
+            assert_eq!(
+                read_mcp_config(&path).unwrap()["mcpServers"]["confer"]["command"],
+                "confer"
+            );
+            let installed = std::fs::read(&path).unwrap();
+            super::install(&agents, true, Some("other-bin".into())).unwrap();
+            super::uninstall(&agents, true).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), installed);
+            super::uninstall(&agents, false).unwrap();
+            assert!(
+                read_mcp_config(&path).unwrap()["mcpServers"]
+                    .get("confer")
+                    .is_none()
+            );
+            assert!(!crate::adapters::check_readiness(host).locally_ready);
+        }
     }
 }

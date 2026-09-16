@@ -150,36 +150,9 @@ pub(super) async fn run_connection(
                 }
                 cx.send_request(UntypedMessage::new("session/set_model", params)?).block_task().await?;
             }
-            if invocation.agent == AgentKind::Cursor {
-                for (id, value) in super::cursor_config(invocation.model.as_deref(), invocation.reasoning_effort.as_deref()).map_err(|error| Error::new(-32602, error.to_string()))? {
-                    cx.send_request(SetSessionConfigOptionRequest::new(session.clone(), id.to_owned(), value)).block_task().await?;
-                }
+            for (id, value) in super::config::session_options(&invocation).map_err(|error| Error::new(-32602, error.to_string()))? {
+                cx.send_request(SetSessionConfigOptionRequest::new(session.clone(), id.to_owned(), value)).block_task().await?;
             }
-            if invocation.agent == AgentKind::Copilot {
-                // Copilot ignores its --model/--effort flags in ACP mode, and the
-                // reasoning_effort option only exists once the model supports it.
-                let model = invocation.model.as_deref().map(|model| ("model", model));
-                let effort = invocation.reasoning_effort.as_deref().map(|effort| ("reasoning_effort", effort));
-                for (id, value) in model.into_iter().chain(effort) {
-                    cx.send_request(SetSessionConfigOptionRequest::new(session.clone(), id.to_owned(), value)).block_task().await?;
-                }
-            }
-            if invocation.agent == AgentKind::Kimi {
-                // Unattended seats use ACP mode=auto. Model and thinking use
-                // the same config-option channel.
-                let mode = Some(("mode", "auto"));
-                let model = invocation.model.as_deref().map(|model| ("model", model));
-                let thinking = invocation
-                    .reasoning_effort
-                    .as_deref()
-                    .map(|effort| ("thinking", effort));
-                for (id, value) in mode.into_iter().chain(model).chain(thinking) {
-                    cx.send_request(SetSessionConfigOptionRequest::new(session.clone(), id.to_owned(), value)).block_task().await?;
-                }
-            }
-            // No native work can happen before the prompt, so a session whose
-            // configuration failed is not recorded; agents such as Copilot never
-            // persist a session that received no prompt.
             if native {
                 state.lock().expect("ACP output lock").native_id = Some(session.to_string());
             }

@@ -77,23 +77,19 @@ enum SkillCommands {
 }
 
 pub(crate) fn run() -> Result<()> {
-    let cli = Cli::parse();
-    match cli.command {
-        Commands::Mcp { command: None } => mcp::run(),
-        Commands::Mcp {
-            command: Some(McpCommands::Capabilities { format }),
-        } => mcp::run_capabilities(format),
-        Commands::Mcp {
-            command:
-                Some(McpCommands::Install {
-                    agents,
-                    dry_run,
-                    bin,
-                }),
-        } => mcp_host::install(&agents, dry_run, bin),
-        Commands::Mcp {
-            command: Some(McpCommands::Uninstall { agents, dry_run }),
-        } => mcp_host::uninstall(&agents, dry_run),
+    match Cli::parse().command {
+        Commands::Mcp { command } => match command {
+            None => mcp::run(),
+            Some(McpCommands::Capabilities { format }) => mcp::run_capabilities(format),
+            Some(McpCommands::Install {
+                agents,
+                dry_run,
+                bin,
+            }) => mcp_host::install(&agents, dry_run, bin),
+            Some(McpCommands::Uninstall { agents, dry_run }) => {
+                mcp_host::uninstall(&agents, dry_run)
+            }
+        },
         Commands::Skill {
             command:
                 SkillCommands::Install {
@@ -148,10 +144,7 @@ fn supported_skill_agents(
     selector: kitup::AgentSelector,
     scope: kitup::Scope,
 ) -> Result<kitup::AgentSelector> {
-    let supported = AgentKind::ALL
-        .into_iter()
-        .filter_map(AgentKind::skill_host_id)
-        .collect::<Vec<_>>();
+    let supported = AgentKind::ALL.map(AgentKind::skill_host_id);
     let selected = match selector {
         kitup::AgentSelector::Auto => {
             let mut detected = kitup::detect_hosts(&kitup::BaseOptions::default(), Some(scope))
@@ -160,10 +153,6 @@ fn supported_skill_agents(
                 .map(|host| host.id)
                 .filter(|id| supported.contains(&id.as_str()))
                 .collect::<Vec<_>>();
-            // kitup's kimi-cli detection only probes the default data root;
-            // a custom KIMI_CODE_HOME is invisible to it. Fall back to
-            // confer's own readiness check so auto selection still lists
-            // Kimi Code.
             if !detected.iter().any(|id| id == "kimi-cli")
                 && crate::adapters::check_readiness(AgentKind::Kimi).locally_ready
             {
@@ -181,9 +170,7 @@ fn supported_skill_agents(
                         supported_skill_ids()
                     )
                 })?;
-                let mapped = agent.skill_host_id().with_context(|| {
-                    format!("{} does not support Skill installation", agent.id())
-                })?;
+                let mapped = agent.skill_host_id();
                 if !selected.iter().any(|item| item == mapped) {
                     selected.push(mapped.to_string());
                 }
@@ -198,12 +185,7 @@ fn supported_skill_agents(
 }
 
 fn supported_skill_ids() -> String {
-    AgentKind::ALL
-        .into_iter()
-        .filter(|agent| agent.skill_host_id().is_some())
-        .map(AgentKind::id)
-        .collect::<Vec<_>>()
-        .join(", ")
+    AgentKind::ALL.map(AgentKind::id).join(", ")
 }
 
 fn skill_bundle() -> kitup::SkillBundle {
@@ -261,35 +243,20 @@ mod tests {
             }
         ));
 
-        let selected = supported_skill_agents(
-            kitup::AgentSelector::Explicit(vec!["agy".into()]),
-            kitup::Scope::User,
-        )
-        .unwrap();
-        assert_eq!(
-            selected,
-            kitup::AgentSelector::Explicit(vec!["antigravity-cli".into()])
-        );
-
-        let selected = supported_skill_agents(
-            kitup::AgentSelector::Explicit(vec!["copilot".into(), "github-copilot".into()]),
-            kitup::Scope::User,
-        )
-        .unwrap();
-        assert_eq!(
-            selected,
-            kitup::AgentSelector::Explicit(vec!["github-copilot".into()])
-        );
-
-        let selected = supported_skill_agents(
-            kitup::AgentSelector::Explicit(vec!["kimi".into(), "kimi-cli".into()]),
-            kitup::Scope::User,
-        )
-        .unwrap();
-        assert_eq!(
-            selected,
-            kitup::AgentSelector::Explicit(vec!["kimi-cli".into()])
-        );
+        for (aliases, expected) in [
+            (vec!["agy"], "antigravity-cli"),
+            (vec!["copilot", "github-copilot"], "github-copilot"),
+            (vec!["kimi", "kimi-cli"], "kimi-cli"),
+        ] {
+            assert_eq!(
+                supported_skill_agents(
+                    kitup::AgentSelector::Explicit(aliases.into_iter().map(String::from).collect()),
+                    kitup::Scope::User,
+                )
+                .unwrap(),
+                kitup::AgentSelector::Explicit(vec![expected.into()])
+            );
+        }
     }
 
     #[test]

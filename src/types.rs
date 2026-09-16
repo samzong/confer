@@ -62,15 +62,15 @@ impl AgentKind {
         }
     }
 
-    pub(crate) fn skill_host_id(self) -> Option<&'static str> {
+    pub(crate) fn skill_host_id(self) -> &'static str {
         match self {
-            Self::Claude => Some("claude-code"),
-            Self::Codex => Some("codex"),
-            Self::Cursor => Some("cursor"),
-            Self::Grok => Some("grok"),
-            Self::Agy => Some("antigravity-cli"),
-            Self::Copilot => Some("github-copilot"),
-            Self::Kimi => Some("kimi-cli"),
+            Self::Claude => "claude-code",
+            Self::Codex => "codex",
+            Self::Cursor => "cursor",
+            Self::Grok => "grok",
+            Self::Agy => "antigravity-cli",
+            Self::Copilot => "github-copilot",
+            Self::Kimi => "kimi-cli",
         }
     }
 }

@@ -1,5 +1,3 @@
-use std::process::Stdio;
-
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
@@ -162,12 +160,7 @@ impl Connection {
             match event["method"].as_str() {
                 Some("item/completed") if params["turnId"].as_str() == Some(&turn) => {
                     let item = &params["item"];
-                    if item["type"] == "agentMessage"
-                        && item["phase"] != "commentary"
-                        && let Some(text) = item["text"].as_str()
-                    {
-                        answer = Some(text.to_owned());
-                    }
+                    answer = final_message(item).or(answer);
                 }
                 Some("turn/completed") if params["turn"]["id"].as_str() == Some(&turn) => {
                     if params["turn"]["status"] != "completed" {
@@ -181,12 +174,7 @@ impl Connection {
                     }
                     if let Some(items) = params["turn"]["items"].as_array() {
                         for item in items {
-                            if item["type"] == "agentMessage"
-                                && item["phase"] != "commentary"
-                                && let Some(text) = item["text"].as_str()
-                            {
-                                answer = Some(text.to_owned());
-                            }
+                            answer = final_message(item).or(answer);
                         }
                     }
                     tokio::time::timeout(
@@ -207,17 +195,11 @@ impl Connection {
 
 pub(super) async fn run(invocation: Invocation, prompt: &str) -> AdapterOutput {
     let mut command = invocation.command();
-    command
-        .arg("app-server")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(false);
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => return AdapterOutput::failed(format!("failed to start codex: {error}")),
+    command.arg("app-server");
+    let (mut child, stderr) = match super::process::spawn(&mut command, &invocation, true) {
+        Ok(process) => process,
+        Err(error) => return AdapterOutput::failed(error.to_string()),
     };
-    let stderr = super::StderrCapture::start(child.stderr.take().expect("piped stderr"));
     let mut connection = Connection {
         input: child.stdin.take().expect("piped stdin"),
         output: BufReader::new(child.stdout.take().expect("piped stdout")).lines(),
@@ -238,16 +220,15 @@ pub(super) async fn run(invocation: Invocation, prompt: &str) -> AdapterOutput {
         Ok(Some(status)) => result.and_then(|_| Err(anyhow::anyhow!("codex exited with {status}"))),
         Err(error) => result.and_then(|_| Err(error.into())),
     };
-    match result {
-        Ok(answer) => AdapterOutput {
-            observed_session_id,
-            answer: Some(answer),
-            error: None,
-        },
-        Err(error) => AdapterOutput {
-            observed_session_id,
-            answer: None,
-            error: Some(error_text(&error.to_string(), &stderr, "")),
-        },
-    }
+    AdapterOutput::from_result(
+        observed_session_id,
+        result.map_err(|error| error_text(&error.to_string(), &stderr, "")),
+    )
+}
+
+fn final_message(item: &Value) -> Option<String> {
+    (item["type"] == "agentMessage" && item["phase"] != "commentary")
+        .then(|| item["text"].as_str())
+        .flatten()
+        .map(str::to_owned)
 }

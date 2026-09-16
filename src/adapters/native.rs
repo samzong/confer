@@ -1,5 +1,3 @@
-use std::process::Stdio;
-
 use agent_client_protocol::ByteStreams;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -12,21 +10,10 @@ pub(super) async fn run(invocation: Invocation) -> AdapterOutput {
     if let Err(error) = apply_native_args(&invocation, &mut command) {
         return AdapterOutput::failed(error);
     }
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(false);
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            return AdapterOutput::failed(format!(
-                "failed to start {}: {error}",
-                invocation.agent.id()
-            ));
-        }
+    let (mut child, stderr) = match super::process::spawn(&mut command, &invocation, true) {
+        Ok(process) => process,
+        Err(error) => return AdapterOutput::failed(error.to_string()),
     };
-    let stderr = super::StderrCapture::start(child.stderr.take().expect("piped stderr"));
     let transport = ByteStreams::new(
         child.stdin.take().expect("piped stdin").compat_write(),
         child.stdout.take().expect("piped stdout").compat(),
@@ -70,8 +57,6 @@ fn apply_native_args(invocation: &Invocation, command: &mut Command) -> Result<(
             command.args(["--acp", "--allow-all"]);
         }
         AgentKind::Kimi => {
-            // Pin the data root so readiness, MCP registration, and the
-            // ACP child agree even when KIMI_CODE_HOME is unset or relative.
             let kimi_home =
                 super::resolve_kimi_home(std::env::var_os("KIMI_CODE_HOME"), dirs::home_dir())
                     .map_err(|error| error.to_string())?;

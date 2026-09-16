@@ -61,11 +61,15 @@ async fn serve() -> Result<()> {
 #[tool_router]
 impl ConferMcp {
     fn new() -> Result<Self> {
-        Ok(Self {
-            store: StateStore::discover()?,
+        Ok(Self::with_store(StateStore::discover()?))
+    }
+
+    fn with_store(store: StateStore) -> Self {
+        Self {
+            store,
             runtime: DeliveryRuntime::new(),
             tool_router: Self::tool_router(),
-        })
+        }
     }
 
     #[tool(
