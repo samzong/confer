@@ -15,6 +15,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    #[command(about = "Show local MCP processes and running seats")]
+    Status,
     #[command(about = "Serve and manage the Confer MCP server")]
     Mcp {
         #[command(subcommand)]
@@ -78,6 +80,7 @@ enum SkillCommands {
 
 pub(crate) fn run() -> Result<()> {
     match Cli::parse().command {
+        Commands::Status => crate::status::run(),
         Commands::Mcp { command } => match command {
             None => mcp::run(),
             Some(McpCommands::Capabilities { format }) => mcp::run_capabilities(format),

@@ -53,7 +53,12 @@ pub(crate) fn run_capabilities(format: CapabilitiesFormat) -> Result<()> {
 }
 
 async fn serve() -> Result<()> {
-    let service = ConferMcp::new()?.serve(stdio()).await?;
+    let mut server = ConferMcp::new()?;
+    match crate::status::Instance::register(&server.store.runtime_path()) {
+        Ok(instance) => server.runtime.activity = Some(instance),
+        Err(error) => eprintln!("Confer running state unavailable: {error:#}"),
+    }
+    let service = server.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
 }

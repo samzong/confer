@@ -4,6 +4,7 @@ pub(super) async fn run_seat_worker(
     mut receiver: mpsc::UnboundedReceiver<QueuedDelivery>,
     store: StateStore,
     deliveries: DeliveryTracker,
+    activity: Option<Arc<crate::status::Instance>>,
 ) {
     while let Some(queued) = receiver.recv().await {
         let session_guard = loop {
@@ -21,7 +22,9 @@ pub(super) async fn run_seat_worker(
         let Some(_session_guard) = session_guard else {
             continue;
         };
-        if let Err(error) = process_queued_delivery(&queued, &store, &deliveries).await {
+        if let Err(error) =
+            process_queued_delivery(&queued, &store, &deliveries, activity.as_ref()).await
+        {
             deliveries.set_failed(&queued.delivery_id, error.to_string());
         }
     }
@@ -31,6 +34,7 @@ async fn process_queued_delivery(
     queued: &QueuedDelivery,
     store: &StateStore,
     deliveries: &DeliveryTracker,
+    activity: Option<&Arc<crate::status::Instance>>,
 ) -> Result<()> {
     let room = store.room_for_workspace(&queued.room_id, &queued.workspace)?;
     let seat = room
@@ -50,6 +54,7 @@ async fn process_queued_delivery(
         );
     }
     deliveries.set_running(&queued.delivery_id);
+    let _activity = activity.map(|instance| instance.start(&queued.delivery_id, &room, seat));
     let first_message = seat.native_session_id.is_none();
     let executable = readiness
         .executable

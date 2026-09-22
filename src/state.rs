@@ -1,10 +1,9 @@
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use fs2::FileExt;
 
 use crate::types::{ROOMS_SCHEMA_VERSION, RoomRecord, RoomsFile};
 
@@ -12,17 +11,6 @@ use crate::types::{ROOMS_SCHEMA_VERSION, RoomRecord, RoomsFile};
 pub(crate) struct StateStore {
     path: PathBuf,
     lock_path: PathBuf,
-}
-
-#[derive(Debug)]
-pub(crate) struct SeatLease {
-    file: File,
-}
-
-impl Drop for SeatLease {
-    fn drop(&mut self) {
-        let _ = self.file.unlock();
-    }
 }
 
 impl StateStore {
@@ -33,6 +21,10 @@ impl StateStore {
             .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))
             .context("cannot determine state directory")?;
         Ok(Self::new(root.join("confer").join("rooms.json")))
+    }
+
+    pub(crate) fn runtime_path(&self) -> PathBuf {
+        self.path.parent().expect("state parent").join("runtime")
     }
 
     pub(crate) fn new(path: PathBuf) -> Self {
@@ -58,8 +50,7 @@ impl StateStore {
     pub(crate) fn mutate<T>(&self, change: impl FnOnce(&mut RoomsFile) -> Result<T>) -> Result<T> {
         self.ensure_parent()?;
         let lock = self.open_lock()?;
-        lock.lock_exclusive()
-            .context("failed to lock Confer room cache")?;
+        lock.lock().context("failed to lock Confer room cache")?;
         let mut state = self.read_unlocked()?;
         state.schema_version = ROOMS_SCHEMA_VERSION;
         let result = change(&mut state)?;
@@ -78,7 +69,7 @@ impl StateStore {
             .ok_or_else(|| anyhow::anyhow!("room '{room_id}' was not found in this workspace"))
     }
 
-    pub(crate) fn try_acquire_seat_lease(&self, room_id: &str, seat_id: &str) -> Result<SeatLease> {
+    pub(crate) fn try_acquire_seat_lease(&self, room_id: &str, seat_id: &str) -> Result<File> {
         let path = self.seat_lease_path(room_id, seat_id)?;
         let lock_dir = path
             .parent()
@@ -92,12 +83,12 @@ impl StateStore {
             .truncate(false)
             .open(&path)
             .with_context(|| format!("failed to open {}", path.display()))?;
-        match file.try_lock_exclusive() {
-            Ok(()) => Ok(SeatLease { file }),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+        match file.try_lock() {
+            Ok(()) => Ok(file),
+            Err(TryLockError::WouldBlock) => {
                 bail!("seat_busy: seat '{seat_id}' has a running delivery")
             }
-            Err(error) => Err(error)
+            Err(TryLockError::Error(error)) => Err(error)
                 .with_context(|| format!("failed to lock seat '{seat_id}' in room '{room_id}'")),
         }
     }
@@ -131,19 +122,16 @@ impl StateStore {
     }
 
     fn read_unlocked(&self) -> Result<RoomsFile> {
-        let mut file = match OpenOptions::new().read(true).open(&self.path) {
-            Ok(file) => file,
+        let body = match fs::read_to_string(&self.path) {
+            Ok(body) => body,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(RoomsFile::default());
             }
             Err(error) => {
                 return Err(error)
-                    .with_context(|| format!("failed to open {}", self.path.display()));
+                    .with_context(|| format!("failed to read {}", self.path.display()));
             }
         };
-        let mut body = String::new();
-        file.read_to_string(&mut body)
-            .with_context(|| format!("failed to read {}", self.path.display()))?;
         if body.trim().is_empty() {
             return Ok(RoomsFile::default());
         }

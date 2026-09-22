@@ -188,6 +188,7 @@ impl DeliveryTracker {
 
 #[derive(Clone)]
 pub(super) struct DeliveryRuntime {
+    pub(super) activity: Option<Arc<crate::status::Instance>>,
     deliveries: DeliveryTracker,
     workers: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<QueuedDelivery>>>>,
 }
@@ -196,6 +197,7 @@ impl DeliveryRuntime {
     pub(super) fn new() -> Self {
         Self {
             deliveries: DeliveryTracker::new(),
+            activity: None,
             workers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -313,6 +315,7 @@ impl ConferMcp {
             receiver,
             self.store.clone(),
             self.runtime.deliveries.clone(),
+            self.runtime.activity.clone(),
         ));
         workers.insert(key, sender.clone());
         sender
