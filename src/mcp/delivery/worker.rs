@@ -4,7 +4,7 @@ pub(super) async fn run_seat_worker(
     mut receiver: mpsc::UnboundedReceiver<QueuedDelivery>,
     store: StateStore,
     deliveries: DeliveryTracker,
-    activity: Option<Arc<crate::status::Instance>>,
+    activity: Option<Arc<crate::mcp::activity::Instance>>,
 ) {
     while let Some(queued) = receiver.recv().await {
         let session_guard = loop {
@@ -34,7 +34,7 @@ async fn process_queued_delivery(
     queued: &QueuedDelivery,
     store: &StateStore,
     deliveries: &DeliveryTracker,
-    activity: Option<&Arc<crate::status::Instance>>,
+    activity: Option<&Arc<crate::mcp::activity::Instance>>,
 ) -> Result<()> {
     let room = store.room_for_workspace(&queued.room_id, &queued.workspace)?;
     let seat = room

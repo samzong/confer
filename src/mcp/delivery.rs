@@ -188,7 +188,7 @@ impl DeliveryTracker {
 
 #[derive(Clone)]
 pub(super) struct DeliveryRuntime {
-    pub(super) activity: Option<Arc<crate::status::Instance>>,
+    pub(super) activity: Option<Arc<crate::mcp::activity::Instance>>,
     deliveries: DeliveryTracker,
     workers: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<QueuedDelivery>>>>,
 }

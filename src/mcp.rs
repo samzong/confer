@@ -1,3 +1,4 @@
+pub(crate) mod activity;
 mod api;
 mod delivery;
 mod rooms;
@@ -54,7 +55,7 @@ pub(crate) fn run_capabilities(format: CapabilitiesFormat) -> Result<()> {
 
 async fn serve() -> Result<()> {
     let mut server = ConferMcp::new()?;
-    match crate::status::Instance::register(&server.store.runtime_path()) {
+    match activity::Instance::register(&server.store.runtime_path()) {
         Ok(instance) => server.runtime.activity = Some(instance),
         Err(error) => eprintln!("Confer running state unavailable: {error:#}"),
     }
