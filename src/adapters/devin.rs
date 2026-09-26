@@ -113,12 +113,11 @@ pub(super) fn build_command(
 ) -> Result<Command> {
     validate_invocation(invocation)?;
     let mut command = invocation.command();
-    // Seat model and permission mode come from the invocation only, never
-    // inherited devin config env vars.
     command
         .env_remove("DEVIN_MODEL")
         .env_remove("DEVIN_PERMISSION_MODE")
-        .env_remove("DEVIN_SANDBOX");
+        .env_remove("DEVIN_SANDBOX")
+        .env_remove("ACP_BACKEND");
     command.args([
         "--permission-mode",
         "dangerous",
@@ -242,7 +241,12 @@ mod tests {
         );
 
         let envs: Vec<_> = command.as_std().get_envs().collect();
-        for name in ["DEVIN_MODEL", "DEVIN_PERMISSION_MODE", "DEVIN_SANDBOX"] {
+        for name in [
+            "DEVIN_MODEL",
+            "DEVIN_PERMISSION_MODE",
+            "DEVIN_SANDBOX",
+            "ACP_BACKEND",
+        ] {
             assert!(
                 envs.iter()
                     .any(|(key, value)| **key == *name && value.is_none()),
