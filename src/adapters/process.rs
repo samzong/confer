@@ -78,6 +78,7 @@ pub(super) fn redact_secrets(value: &str) -> String {
         "GITHUB_TOKEN",
         "COPILOT_PROVIDER_API_KEY",
         "COPILOT_PROVIDER_BEARER_TOKEN",
+        "WINDSURF_API_KEY",
     ] {
         if let Ok(secret) = std::env::var(name)
             && !secret.is_empty()

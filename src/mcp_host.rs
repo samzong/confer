@@ -88,7 +88,7 @@ fn resolve_bin(bin: Option<PathBuf>) -> Result<String> {
 
 fn add_args(host: AgentKind, bin: &str) -> Option<Vec<&str>> {
     let mut args = match host {
-        AgentKind::Claude | AgentKind::Grok => {
+        AgentKind::Claude | AgentKind::Grok | AgentKind::Devin => {
             vec!["mcp", "add", "--scope", "user", SERVER_NAME, "--"]
         }
         AgentKind::Codex | AgentKind::Copilot => vec!["mcp", "add", SERVER_NAME, "--"],
@@ -102,7 +102,9 @@ fn add_args(host: AgentKind, bin: &str) -> Option<Vec<&str>> {
 fn remove_args(host: AgentKind) -> Option<Vec<&'static str>> {
     Some(match host {
         AgentKind::Claude => vec!["mcp", "remove", SERVER_NAME, "--scope", "user"],
-        AgentKind::Grok => vec!["mcp", "remove", "--scope", "user", SERVER_NAME],
+        AgentKind::Grok | AgentKind::Devin => {
+            vec!["mcp", "remove", "--scope", "user", SERVER_NAME]
+        }
         AgentKind::Codex | AgentKind::Agy | AgentKind::Copilot => {
             vec!["mcp", "remove", SERVER_NAME]
         }
@@ -345,6 +347,11 @@ mod tests {
                 AgentKind::Agy,
                 "mcp add confer confer mcp",
                 "mcp remove confer",
+            ),
+            (
+                AgentKind::Devin,
+                "mcp add --scope user confer -- confer mcp",
+                "mcp remove --scope user confer",
             ),
         ] {
             assert_eq!(

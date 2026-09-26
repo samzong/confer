@@ -1,6 +1,6 @@
 ---
 name: confer
-description: Coordinate Claude Code, Codex, Cursor Agent, Grok, Antigravity CLI, GitHub Copilot CLI, and Kimi Code through private local MCP rooms. Trigger when the user asks to consult another agent, have multiple agents investigate independently, divide planning and implementation, compare answers, or request an independent review without copying between terminals.
+description: Coordinate Claude Code, Codex, Cursor Agent, Grok, Antigravity CLI, GitHub Copilot CLI, Kimi Code, and Devin for Terminal through private local MCP rooms. Trigger when the user asks to consult another agent, have multiple agents investigate independently, divide planning and implementation, compare answers, or request an independent review without copying between terminals.
 ---
 
 # Confer
@@ -33,9 +33,9 @@ When choices are open, select seats from the task:
 
 Choose the number of execution seats from the task; there is no default count. Supply a positive `target_size`, explicit `seats`, or both. `target_size` excludes the host. Confer preserves explicit seats and automatically fills remaining positions, preferring agent types other than the host. The same agent, model, and reasoning effort may be used by multiple independent seats. Give seats short unique names and private instructions. Treat one room as one coordination context: add a new seat when a later phase needs another role, and retire a seat only after its delivery finishes and its role is complete.
 
-When the host is Kimi Code, pass `"host_agent": "kimi"` on create_room: confer's automatic host detection recognizes Claude, Codex, Cursor, Grok, and Copilot session markers, while Kimi Code and Antigravity expose no equivalent marker, so auto-detection would mislabel those hosts. Pass it explicitly whenever auto-detection may not identify the host, not only for Kimi.
+Pass `"host_agent": "kimi"` for Kimi Code or `"host_agent": "devin"` for Devin for Terminal on create_room: confer's automatic host detection recognizes Claude, Codex, Cursor, Grok, and Copilot session markers, while Kimi Code, Antigravity, and Devin expose no equivalent marker, so auto-detection would mislabel those hosts. Pass it explicitly whenever auto-detection may not identify the host.
 
-Kimi Code seats' `reasoning_effort` is thinking (`on` / `low` / `high` / `max`).
+Kimi Code seats' `reasoning_effort` is thinking (`on` / `low` / `high` / `max`). Devin seats do not accept `reasoning_effort`.
 
 ## Keep Seats Private
 

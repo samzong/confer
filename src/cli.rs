@@ -40,7 +40,7 @@ enum McpCommands {
     Install {
         #[arg(
             long = "agent",
-            help = "Target host: claude, codex, cursor, grok, agy, copilot, or kimi. Repeat for multiple hosts. Use '*' for all."
+            help = "Target host: claude, codex, cursor, grok, agy, copilot, kimi, or devin. Repeat for multiple hosts. Use '*' for all."
         )]
         agents: Vec<String>,
         #[arg(long, help = "Print host changes without applying them")]
@@ -52,7 +52,7 @@ enum McpCommands {
     Uninstall {
         #[arg(
             long = "agent",
-            help = "Target host: claude, codex, cursor, grok, agy, copilot, or kimi. Repeat for multiple hosts. Use '*' for all."
+            help = "Target host: claude, codex, cursor, grok, agy, copilot, kimi, or devin. Repeat for multiple hosts. Use '*' for all."
         )]
         agents: Vec<String>,
         #[arg(long, help = "Print host changes without applying them")]
@@ -68,7 +68,7 @@ enum SkillCommands {
         scope: Option<String>,
         #[arg(
             long = "agent",
-            help = "Target agent: claude, codex, cursor, grok, agy, copilot, or kimi. Repeat for multiple agents. Use '*' for all."
+            help = "Target agent: claude, codex, cursor, grok, agy, copilot, kimi, or devin. Repeat for multiple agents. Use '*' for all."
         )]
         agents: Vec<String>,
         #[arg(long, help = "Show the Kitup install plan without writing")]
