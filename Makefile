@@ -76,6 +76,6 @@ clean: ## Remove build artifacts
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "; printf "\n$(BOLD)Confer$(RESET) — local multi-agent rooms over MCP\n"} \
-		/^# ── / {n = $$0; gsub(/(^# ── | ─+$$)/, "", n); printf "\n$(BOLD)%s$(RESET)\n", n} \
+		/^# ── / {n = $$0; gsub(/(^# ── | (─)+$$)/, "", n); printf "\n$(BOLD)%s$(RESET)\n", n} \
 		/^[a-zA-Z_-]+:.*## / {printf "  $(CYAN)make %-13s$(RESET) %s\n", $$1, $$2} \
 		END {printf "\n"}' $(MAKEFILE_LIST)
