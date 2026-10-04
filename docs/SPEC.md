@@ -75,7 +75,7 @@ On macOS and Linux, `XDG_STATE_HOME` must be an absolute path. An unset, empty, 
 - external seat active or retired status;
 - native agent session ID and adapter recovery fields when a session has started.
 
-These files do not contain message bodies, agent replies, pending delivery state, full transcripts, tool calls, thinking, or code snapshots. Seat lease files contain no semantic state. Native agent stores remain the source of truth for conversation history.
+These files do not contain message bodies, agent replies, queued messages, delivery status, full transcripts, tool calls, thinking, or code snapshots. A seat lease file is non-empty only while a delivery on that seat has been dispatched and has not finished; it contains no message content. Native agent stores remain the source of truth for conversation history.
 
 Room metadata writes use a short advisory lock and atomic replacement. Current writes use schema version 3; versions 1 and 2 remain readable and normalize on the next mutation, while unknown newer versions fail closed. Removing the disposable room cache resets Confer discovery without deleting native agent sessions.
 
@@ -95,7 +95,7 @@ If an explicitly requested agent is unavailable, creation or seat addition fails
 
 The first queued message to an external seat creates its native session and records the native session ID. Every seat has one in-process FIFO worker. A sent message enters that worker, starts promptly when the seat is idle, and remains `queued` while an earlier delivery runs. Different seats may run concurrently. A cross-process file lease serializes workers from separate MCP processes, but FIFO ordering is guaranteed only within one live MCP process. Queue processing does not retry a native message after dispatch may have begun.
 
-Delivery tracking, pending Queue messages, and workers exist only in the live MCP process. If that process exits, queued messages that have not started are lost, unfinished outputs and delivery IDs are lost, its lease is released, and native work may have continued. Persisted seat metadata keeps native session addressing, but not pending messages or in-flight certainty. The caller must verify uncertain native work before sending that seat another message. Confer never automatically redelivers an uncertain message because the first execution may have changed code.
+Delivery tracking, pending Queue messages, and workers exist only in the live MCP process. If that process exits, queued messages that have not started are lost, unfinished outputs and delivery IDs are lost, its lease is released, and native work may have continued. Persisted seat metadata keeps native session addressing, but not pending messages. A seat whose lease file is non-empty while no process holds the lease reports `previous_delivery_uncertain: true`: its last delivery ended without Confer observing a result, so native work may have changed files or may still be running. The flag clears when the seat's next delivery finishes. The caller must verify uncertain native work before sending that seat another message. Confer never automatically redelivers an uncertain message because the first execution may have changed code.
 
 ## Message visibility
 
@@ -131,7 +131,7 @@ Retires one seat by name or ID using `room_id`, `seat`, and the host-verified wo
 
 Lists rooms. `scope` defaults to `current`, which requires the host task's absolute directory in `workspace` and normalizes it like creation. `all` returns metadata for every recorded workspace without requiring a workspace or inspecting the MCP process working directory. The bundled Skill uses this when the user explicitly asks to recover an earlier room; other callers decide their own discovery workflow. Discovery does not authorize operating on rooms outside the host task's workspace.
 
-Output includes room ID, name, participants, native-session availability, each seat's resume command, and timestamps. It never returns message content.
+Output includes room ID, name, participants, native-session availability, each seat's resume command and `previous_delivery_uncertain` flag, and timestamps. It never returns message content.
 
 ### `send_message`
 
@@ -144,7 +144,7 @@ Input:
 - `recipients`: one or more seat names or IDs, or `*` for broadcast;
 - `message`.
 
-The send returns one receipt and new `delivery_id` per recipient plus immediate acceptance or readiness errors. The receipt does not include delivery status; the caller uses `wait_output` to observe `queued`, `running`, `completed`, or `failed` state.
+The send returns one receipt and new `delivery_id` per recipient plus immediate acceptance or readiness errors. Each receipt includes the seat's `previous_delivery_uncertain` flag observed before queueing. The receipt does not include delivery status; the caller uses `wait_output` to observe `queued`, `running`, `completed`, or `failed` state.
 
 ### `wait_output`
 

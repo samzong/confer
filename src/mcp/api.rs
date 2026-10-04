@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::adapters;
+use crate::state::StateStore;
 use crate::types::{AgentKind, Readiness, RoomRecord, SeatStatus};
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
@@ -96,6 +97,7 @@ pub(super) struct SeatView {
     reasoning_effort: Option<String>,
     native_session: bool,
     resume_command: Option<String>,
+    previous_delivery_uncertain: bool,
     status: SeatStatus,
 }
 
@@ -135,7 +137,7 @@ struct ErrorOutput {
     error: String,
 }
 
-pub(super) fn room_view(room: &RoomRecord) -> RoomView {
+pub(super) fn room_view(room: &RoomRecord, store: &StateStore) -> RoomView {
     RoomView {
         id: room.id.clone(),
         name: room.name.clone(),
@@ -154,6 +156,7 @@ pub(super) fn room_view(room: &RoomRecord) -> RoomView {
                 resume_command: seat.native_session_id.as_deref().and_then(|session| {
                     adapters::resume_command(seat.agent, &room.workspace, session)
                 }),
+                previous_delivery_uncertain: store.seat_dispatch_uncertain(&room.id, &seat.id),
                 status: seat.status,
             })
             .collect(),
@@ -166,13 +169,14 @@ pub(super) fn rooms_for_scope(
     rooms: Vec<RoomRecord>,
     scope: RoomScope,
     workspace: Option<&str>,
+    store: &StateStore,
 ) -> Vec<RoomView> {
     let mut rooms = rooms
         .into_iter()
         .filter(|room| {
             matches!(scope, RoomScope::All) || Some(room.workspace.as_str()) == workspace
         })
-        .map(|room| room_view(&room))
+        .map(|room| room_view(&room, store))
         .collect::<Vec<_>>();
     rooms.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
     rooms

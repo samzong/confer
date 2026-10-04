@@ -127,7 +127,7 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "List Confer rooms. scope defaults to current, which requires workspace as the actual current task's absolute directory. Verify the returned normalized Git worktree root, or canonical directory outside Git, belongs to your task before using that root for followup calls. Never substitute another room's workspace to bypass a mismatch. scope all requires no workspace and lists rooms across every recorded workspace. Returns room and participant metadata only, never messages or agent outputs.",
+        description = "List Confer rooms. scope defaults to current, which requires workspace as the actual current task's absolute directory. Verify the returned normalized Git worktree root, or canonical directory outside Git, belongs to your task before using that root for followup calls. Never substitute another room's workspace to bypass a mismatch. scope all requires no workspace and lists rooms across every recorded workspace. Returns room and participant metadata only, never messages or agent outputs. A seat with previous_delivery_uncertain true had a delivery end without an observed result, for example after an MCP restart; its native work may have changed files or still be running, so verify it before sending that seat more work.",
         annotations(
             title = "List rooms",
             read_only_hint = true,
@@ -143,7 +143,7 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "Queue one message for one or more external seats in a room. Pass the normalized workspace root already verified against your actual current task when creating or recovering the room. A different workspace is rejected; never substitute another room's workspace to bypass a mismatch. Use recipient '*' to broadcast. Idle seats start promptly and busy seats run messages FIFO. Every recipient gets a delivery ID for wait_output.",
+        description = "Queue one message for one or more external seats in a room. Pass the normalized workspace root already verified against your actual current task when creating or recovering the room. A different workspace is rejected; never substitute another room's workspace to bypass a mismatch. Use recipient '*' to broadcast. Idle seats start promptly and busy seats run messages FIFO. Every recipient gets a delivery ID for wait_output. A receipt with previous_delivery_uncertain true means the seat's earlier delivery ended without an observed result; verify that native work as well.",
         annotations(
             title = "Send message",
             read_only_hint = false,

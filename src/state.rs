@@ -1,5 +1,6 @@
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::Write;
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -93,6 +94,19 @@ impl StateStore {
         }
     }
 
+    pub(crate) fn seat_dispatch_uncertain(&self, room_id: &str, seat_id: &str) -> bool {
+        let Ok(lease) = self
+            .seat_lease_path(room_id, seat_id)
+            .and_then(|path| Ok(File::open(path)?))
+        else {
+            return false;
+        };
+        let uncertain =
+            lease.metadata().is_ok_and(|meta| meta.len() > 0) && lease.try_lock_shared().is_ok();
+        let _ = lease.unlock();
+        uncertain
+    }
+
     fn seat_lease_path(&self, room_id: &str, seat_id: &str) -> Result<PathBuf> {
         let parent = self
             .path
@@ -145,6 +159,12 @@ impl StateStore {
         }
         Ok(state)
     }
+}
+
+pub(crate) fn mark_seat_dispatch(lease: &File, delivery_id: &str) -> Result<()> {
+    lease.set_len(0)?;
+    lease.write_all_at(delivery_id.as_bytes(), 0)?;
+    Ok(())
 }
 
 pub(crate) fn write_json_atomic(path: &Path, value: &impl serde::Serialize) -> Result<()> {
