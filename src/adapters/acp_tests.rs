@@ -91,7 +91,7 @@ async fn run_script(
                         let mut caps = json!({"loadSession":script.load_session});
                         if script.configure {
                             caps["sessionCapabilities"] = json!({"close":{}});
-                            if matches!(agent, AgentKind::Kimi | AgentKind::Grok) {
+                            if matches!(agent, AgentKind::Kimi | AgentKind::Grok | AgentKind::Opencode) {
                                 caps["sessionCapabilities"]["resume"] = json!({});
                             }
                         }
@@ -358,7 +358,7 @@ async fn configured_session(
     super::validate_invocation(&invocation).unwrap();
     let attach = match (invocation.first_message, invocation.agent) {
         (true, _) => "new",
-        (false, AgentKind::Kimi | AgentKind::Grok) => "resume",
+        (false, AgentKind::Kimi | AgentKind::Grok | AgentKind::Opencode) => "resume",
         _ => "load",
     };
     let script = Script {
@@ -464,6 +464,41 @@ async fn kimi_unknown_thinking_fails_before_the_prompt() {
         invocation,
         vec![],
         Some(("thinking", "Invalid params: Unknown thinking value: high")),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn opencode_sets_build_mode_then_model_then_effort_and_resumes() {
+    for (first, model, effort) in [
+        (true, Some("opencode/big-pickle"), None),
+        (true, Some("provider/model"), Some("high")),
+        (false, Some("provider/model"), Some("default")),
+        (false, None, Some("low")),
+    ] {
+        let mut invocation = invocation(first);
+        invocation.agent = AgentKind::Opencode;
+        invocation.model = model.map(str::to_owned);
+        invocation.reasoning_effort = effort.map(str::to_owned);
+        super::validate_invocation(&invocation).unwrap();
+        let expected = std::iter::once(("mode", "build"))
+            .chain(model.map(|value| ("model", value)))
+            .chain(effort.map(|value| ("effort", value)))
+            .collect();
+        configured_session(invocation, expected, None).await;
+    }
+}
+
+#[tokio::test]
+async fn opencode_unsupported_model_effort_never_prompts_or_records_a_session() {
+    let mut invocation = invocation(true);
+    invocation.agent = AgentKind::Opencode;
+    invocation.model = Some("opencode/big-pickle".into());
+    invocation.reasoning_effort = Some("high".into());
+    configured_session(
+        invocation,
+        vec![],
+        Some(("effort", "Invalid params: effort not found: high")),
     )
     .await;
 }

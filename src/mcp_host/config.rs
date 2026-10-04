@@ -11,13 +11,13 @@ pub(super) fn write_mcp_config(host: AgentKind, path: &Path, bin: &str) -> Resul
         let servers = config
             .as_object_mut()
             .and_then(|root| {
-                root.entry("mcpServers")
+                root.entry(server_key(host))
                     .or_insert_with(|| Value::Object(Map::new()))
                     .as_object_mut()
             })
             .with_context(|| {
                 format!(
-                    "invalid {} MCP config: mcpServers must be an object",
+                    "invalid {} MCP config: server map must be an object",
                     host.id()
                 )
             })?;
@@ -26,20 +26,23 @@ pub(super) fn write_mcp_config(host: AgentKind, path: &Path, bin: &str) -> Resul
             .or_insert_with(|| Value::Object(Map::new()))
             .as_object_mut()
             .with_context(|| {
-                format!(
-                    "invalid {} MCP config: mcpServers.confer must be an object",
-                    host.id()
-                )
+                format!("invalid {} MCP config: confer must be an object", host.id())
             })?;
-        if uses_non_stdio_transport(entry) {
+        if uses_non_stdio_transport(host, entry) {
             bail!(
                 "cannot install {} MCP config: existing confer entry uses a non-stdio transport",
                 host.id()
             );
         }
-        entry.insert("type".into(), Value::String("stdio".into()));
-        entry.insert("command".into(), Value::String(bin.into()));
-        entry.insert("args".into(), serde_json::json!([SERVER_ARG]));
+        if host == AgentKind::Opencode {
+            entry.insert("type".into(), Value::String("local".into()));
+            entry.insert("command".into(), serde_json::json!([bin, SERVER_ARG]));
+            entry.insert("enabled".into(), Value::Bool(true));
+        } else {
+            entry.insert("type".into(), Value::String("stdio".into()));
+            entry.insert("command".into(), Value::String(bin.into()));
+            entry.insert("args".into(), serde_json::json!([SERVER_ARG]));
+        }
         Ok(())
     })
 }
@@ -49,11 +52,14 @@ pub(super) fn remove_mcp_config(host: AgentKind, path: &Path) -> Result<()> {
         return Ok(());
     }
     update_mcp_config(path, |config| {
-        if let Some(servers) = config.get_mut("mcpServers").and_then(Value::as_object_mut) {
+        if let Some(servers) = config
+            .get_mut(server_key(host))
+            .and_then(Value::as_object_mut)
+        {
             if servers
                 .get(SERVER_NAME)
                 .and_then(Value::as_object)
-                .is_some_and(uses_non_stdio_transport)
+                .is_some_and(|entry| uses_non_stdio_transport(host, entry))
             {
                 bail!(
                     "cannot uninstall {} MCP config: existing confer entry uses a non-stdio transport",
@@ -74,12 +80,10 @@ fn update_mcp_config(path: &Path, change: impl FnOnce(&mut Value) -> Result<()>)
 
 pub(super) fn read_mcp_config(path: &Path) -> Result<Value> {
     match fs::read_to_string(path) {
-        Ok(body) if body.trim().is_empty() => Ok(serde_json::json!({ "mcpServers": {} })),
+        Ok(body) if body.trim().is_empty() => Ok(serde_json::json!({})),
         Ok(body) => serde_json::from_str(&body)
             .with_context(|| format!("failed to parse {}", path.display())),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            Ok(serde_json::json!({ "mcpServers": {} }))
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(serde_json::json!({})),
         Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
     }
 }
@@ -100,8 +104,21 @@ fn write_mcp_config_file(path: &Path, config: &Value) -> Result<()> {
     crate::state::write_json_atomic(path, config).context("failed to write MCP config")
 }
 
-fn uses_non_stdio_transport(entry: &Map<String, Value>) -> bool {
-    entry.contains_key("url") || entry.get("type").is_some_and(|value| value != "stdio")
+fn server_key(host: AgentKind) -> &'static str {
+    if host == AgentKind::Opencode {
+        "mcp"
+    } else {
+        "mcpServers"
+    }
+}
+
+fn uses_non_stdio_transport(host: AgentKind, entry: &Map<String, Value>) -> bool {
+    let transport = if host == AgentKind::Opencode {
+        "local"
+    } else {
+        "stdio"
+    };
+    entry.contains_key("url") || entry.get("type").is_some_and(|value| value != transport)
 }
 
 #[cfg(test)]
@@ -149,5 +166,58 @@ mod tests {
 
         let config = read_mcp_config(&path).unwrap();
         assert_eq!(config["mcpServers"]["confer"]["command"], "confer");
+    }
+
+    #[test]
+    fn opencode_registration_preserves_config_and_uses_local_command_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opencode.json");
+        let original = serde_json::json!({
+            "model": "opencode/big-pickle",
+            "permission": {"bash": "ask"},
+            "mcp": {
+                "other": {"type": "remote", "url": "https://example.com/mcp"},
+                "confer": {"type": "local", "command": ["old"], "enabled": false, "environment": {"A": "B"}}
+            }
+        });
+        std::fs::write(&path, original.to_string()).unwrap();
+        for bin in ["confer", "/path with spaces/confer"] {
+            write_mcp_config(AgentKind::Opencode, &path, bin).unwrap();
+            let config = read_mcp_config(&path).unwrap();
+            assert_eq!(config["model"], original["model"]);
+            assert_eq!(config["permission"], original["permission"]);
+            assert_eq!(config["mcp"]["other"], original["mcp"]["other"]);
+            assert_eq!(config["mcp"]["confer"]["type"], "local");
+            assert_eq!(
+                config["mcp"]["confer"]["command"],
+                serde_json::json!([bin, "mcp"])
+            );
+            assert_eq!(config["mcp"]["confer"]["enabled"], true);
+            assert_eq!(
+                config["mcp"]["confer"]["environment"],
+                original["mcp"]["confer"]["environment"]
+            );
+            assert!(config.get("mcpServers").is_none());
+        }
+        remove_mcp_config(AgentKind::Opencode, &path).unwrap();
+        let config = read_mcp_config(&path).unwrap();
+        assert!(config["mcp"].get("confer").is_none());
+        assert_eq!(config["mcp"]["other"], original["mcp"]["other"]);
+    }
+
+    #[test]
+    fn opencode_registration_refuses_remote_or_malformed_config_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opencode.json");
+        for body in [
+            r#"{"mcp":{"confer":{"type":"remote","url":"https://example.com/mcp"}}}"#,
+            r#"{"mcp":[]}"#,
+            r#"{"mcp":{"confer":false}}"#,
+            "invalid",
+        ] {
+            std::fs::write(&path, body).unwrap();
+            assert!(write_mcp_config(AgentKind::Opencode, &path, "confer").is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+        }
     }
 }

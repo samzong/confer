@@ -141,7 +141,8 @@ pub(super) fn build_command(invocation: &Invocation, prompt: &str) -> Result<Com
         | AgentKind::Cursor
         | AgentKind::Copilot
         | AgentKind::Kimi
-        | AgentKind::Devin => {
+        | AgentKind::Devin
+        | AgentKind::Opencode => {
             bail!("agent uses a dedicated adapter")
         }
     }

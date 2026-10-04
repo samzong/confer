@@ -93,7 +93,7 @@ fn add_args(host: AgentKind, bin: &str) -> Option<Vec<&str>> {
         }
         AgentKind::Codex | AgentKind::Copilot => vec!["mcp", "add", SERVER_NAME, "--"],
         AgentKind::Agy => vec!["mcp", "add", SERVER_NAME],
-        AgentKind::Cursor | AgentKind::Kimi => return None,
+        AgentKind::Cursor | AgentKind::Kimi | AgentKind::Opencode => return None,
     };
     args.extend([bin, SERVER_ARG]);
     Some(args)
@@ -108,7 +108,7 @@ fn remove_args(host: AgentKind) -> Option<Vec<&'static str>> {
         AgentKind::Codex | AgentKind::Agy | AgentKind::Copilot => {
             vec!["mcp", "remove", SERVER_NAME]
         }
-        AgentKind::Cursor | AgentKind::Kimi => return None,
+        AgentKind::Cursor | AgentKind::Kimi | AgentKind::Opencode => return None,
     })
 }
 
@@ -250,7 +250,10 @@ fn run_host_command(
 }
 
 fn uses_config_file(host: AgentKind) -> bool {
-    matches!(host, AgentKind::Cursor | AgentKind::Kimi)
+    matches!(
+        host,
+        AgentKind::Cursor | AgentKind::Kimi | AgentKind::Opencode
+    )
 }
 
 fn mcp_config_path(host: AgentKind) -> Result<PathBuf> {
@@ -263,6 +266,12 @@ fn mcp_config_path(host: AgentKind) -> Result<PathBuf> {
             dirs::home_dir(),
         )?
         .join("mcp.json")),
+        AgentKind::Opencode => Ok(std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
+            .context("cannot determine OpenCode config directory")?
+            .join("opencode/opencode.json")),
         _ => bail!("{} does not use an MCP config file", host.id()),
     }
 }
@@ -364,7 +373,7 @@ mod tests {
             );
             assert!(!uses_config_file(host));
         }
-        for host in [AgentKind::Cursor, AgentKind::Kimi] {
+        for host in [AgentKind::Cursor, AgentKind::Kimi, AgentKind::Opencode] {
             assert!(add_args(host, "confer").is_none());
             assert!(remove_args(host).is_none());
             assert!(uses_config_file(host));
