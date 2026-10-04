@@ -15,7 +15,7 @@ use tokio::sync::{Mutex, mpsc, watch};
 use super::ConferMcp;
 use super::api::{SendMessageArgs, WaitOutputArgs, timestamp};
 use crate::adapters::{self, Invocation};
-use crate::state::{StateStore, canonical_workspace};
+use crate::state::{StateStore, canonical_workspace, mark_seat_dispatch};
 use crate::types::{AgentKind, RoomRecord, SeatRecord, SeatStatus};
 
 const DEFAULT_WAIT_MS: u64 = 120_000;
@@ -63,6 +63,7 @@ struct SendReceipt {
     seat_name: String,
     agent: AgentKind,
     accepted: bool,
+    previous_delivery_uncertain: bool,
     error: Option<String>,
 }
 
@@ -264,6 +265,7 @@ impl ConferMcp {
                 .reason
                 .unwrap_or_else(|| "agent is not locally ready".into())
         });
+        let previous_delivery_uncertain = self.store.seat_dispatch_uncertain(&room.id, &seat.id);
         let delivery_id = uuid::Uuid::new_v4().to_string();
         self.runtime.deliveries.insert(DeliveryState {
             delivery_id: delivery_id.clone(),
@@ -303,6 +305,7 @@ impl ConferMcp {
             seat_name: seat.name.clone(),
             agent: seat.agent,
             accepted: error.is_none(),
+            previous_delivery_uncertain,
             error,
         }
     }

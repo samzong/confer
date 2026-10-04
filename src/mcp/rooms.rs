@@ -47,7 +47,7 @@ impl ConferMcp {
             Ok(())
         })?;
         Ok(CreateRoomOutput {
-            room: room_view(&room),
+            room: room_view(&room, &self.store),
             readiness,
         })
     }
@@ -86,7 +86,7 @@ impl ConferMcp {
             Ok(room.clone())
         })?;
         Ok(AddSeatOutput {
-            room: room_view(&room),
+            room: room_view(&room, &self.store),
             readiness,
         })
     }
@@ -127,7 +127,7 @@ impl ConferMcp {
         })?;
         self.runtime.stop_seat(&room.id, &seat_id).await;
         Ok(RetireSeatOutput {
-            room: room_view(&room),
+            room: room_view(&room, &self.store),
         })
     }
 
@@ -145,7 +145,12 @@ impl ConferMcp {
             ),
             RoomScope::All => None,
         };
-        let rooms = rooms_for_scope(self.store.load()?.rooms, scope, workspace.as_deref());
+        let rooms = rooms_for_scope(
+            self.store.load()?.rooms,
+            scope,
+            workspace.as_deref(),
+            &self.store,
+        );
         Ok(ListRoomsOutput {
             scope,
             workspace,

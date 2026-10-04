@@ -1,4 +1,4 @@
-use super::{StateStore, canonical_workspace, normalize_workspace};
+use super::{StateStore, canonical_workspace, mark_seat_dispatch, normalize_workspace};
 use crate::types::SeatStatus;
 
 #[test]
@@ -212,10 +212,29 @@ fn seat_lease_is_exclusive_across_store_instances() {
         .unwrap_err();
     assert!(error.to_string().contains("seat_busy"));
 
-    drop(first);
+    first.unlock().unwrap();
     assert!(
         second_store
             .try_acquire_seat_lease("room-1", "seat-1")
             .is_ok()
     );
+}
+
+#[test]
+fn unreleased_dispatch_marks_seat_uncertain_until_the_next_delivery_finishes() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StateStore::new(dir.path().join("rooms.json"));
+    assert!(!store.seat_dispatch_uncertain("room-1", "seat-1"));
+
+    let interrupted = store.try_acquire_seat_lease("room-1", "seat-1").unwrap();
+    mark_seat_dispatch(&interrupted, "delivery-1").unwrap();
+    assert!(!store.seat_dispatch_uncertain("room-1", "seat-1"));
+    interrupted.unlock().unwrap();
+    assert!(store.seat_dispatch_uncertain("room-1", "seat-1"));
+
+    let next = store.try_acquire_seat_lease("room-1", "seat-1").unwrap();
+    mark_seat_dispatch(&next, "delivery-2").unwrap();
+    next.set_len(0).unwrap();
+    next.unlock().unwrap();
+    assert!(!store.seat_dispatch_uncertain("room-1", "seat-1"));
 }

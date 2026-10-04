@@ -19,14 +19,21 @@ pub(super) async fn run_seat_worker(
                 }
             }
         };
-        let Some(_session_guard) = session_guard else {
+        let Some(lease) = session_guard else {
             continue;
         };
-        if let Err(error) =
-            process_queued_delivery(&queued, &store, &deliveries, activity.as_ref()).await
-        {
+        let result = match mark_seat_dispatch(&lease, &queued.delivery_id) {
+            Ok(()) => {
+                process_queued_delivery(&queued, &store, &deliveries, activity.as_ref()).await
+            }
+            Err(error) => Err(anyhow::anyhow!(
+                "failed to record delivery dispatch: {error}"
+            )),
+        };
+        if let Err(error) = result {
             deliveries.set_failed(&queued.delivery_id, error.to_string());
         }
+        let _ = lease.set_len(0);
     }
 }
 

@@ -109,7 +109,7 @@
   <text x="1048" y="275" class="body">room + seat metadata</text>
   <text x="1048" y="295" class="body">selection + native session IDs</text>
   <text x="1048" y="325" class="mono">no messages · no transcripts</text>
-  <text x="1048" y="348" class="body">advisory lease files hold no state</text>
+  <text x="1048" y="348" class="body">leases mark unfinished dispatch</text>
 
   <rect x="1030" y="410" width="220" height="154" rx="12" class="box" fill="#f2f1ee" stroke="#59616c"/>
   <text x="1048" y="437" class="headingSmall">Live delivery map</text>
