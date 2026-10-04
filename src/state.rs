@@ -101,8 +101,8 @@ impl StateStore {
         else {
             return false;
         };
-        let uncertain =
-            lease.metadata().is_ok_and(|meta| meta.len() > 0) && lease.try_lock_shared().is_ok();
+        let non_empty = || lease.metadata().is_ok_and(|meta| meta.len() > 0);
+        let uncertain = non_empty() && lease.try_lock_shared().is_ok() && non_empty();
         let _ = lease.unlock();
         uncertain
     }
