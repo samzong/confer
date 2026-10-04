@@ -31,7 +31,7 @@ pub(super) async fn run_seat_worker(
             )),
         };
         if let Err(error) = result {
-            deliveries.set_failed(&queued.delivery_id, error.to_string());
+            deliveries.set_failed(&queued.delivery_id, format!("{error:#}"));
         }
         let _ = lease.set_len(0);
     }
@@ -92,7 +92,7 @@ async fn process_queued_delivery(
     let persistence_error =
         persist_native_session(store, &queued.room_id, &queued.seat_id, observed_session)
             .err()
-            .map(|error| format!("native session could not be persisted: {error}"));
+            .map(|error| format!("native session could not be persisted: {error:#}"));
     let resume_command = observed_session
         .filter(|_| persistence_error.is_none())
         .or(seat.native_session_id.as_deref())

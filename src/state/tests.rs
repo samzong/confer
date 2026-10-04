@@ -238,3 +238,17 @@ fn unreleased_dispatch_marks_seat_uncertain_until_the_next_delivery_finishes() {
     next.unlock().unwrap();
     assert!(!store.seat_dispatch_uncertain("room-1", "seat-1"));
 }
+
+#[test]
+fn cache_parse_error_names_unknown_agent_and_keeps_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StateStore::new(dir.path().join("rooms.json"));
+    let body = r#"{"schema_version":3,"rooms":[{"id":"room-1","name":"Room","workspace":"/tmp/project","host":{"agent":null},"seats":[{"id":"seat-1","name":"reviewer","agent":"future-agent","model":null,"reasoning_effort":null,"instructions":null,"native_session_id":null}],"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}]}"#;
+    std::fs::write(store.path(), body).unwrap();
+
+    let error = store.load().unwrap_err().to_string();
+    assert!(error.contains("future-agent"), "{error}");
+    assert!(error.contains(env!("CARGO_PKG_VERSION")), "{error}");
+    assert!(store.mutate(|_| Ok(())).is_err());
+    assert_eq!(std::fs::read_to_string(store.path()).unwrap(), body);
+}

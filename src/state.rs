@@ -149,8 +149,17 @@ impl StateStore {
         if body.trim().is_empty() {
             return Ok(RoomsFile::default());
         }
-        let state: RoomsFile = serde_json::from_str(&body)
-            .with_context(|| format!("failed to parse {}", self.path.display()))?;
+        let state: RoomsFile = serde_json::from_str(&body).map_err(|error| {
+            let hint = if error.classify() == serde_json::error::Category::Data {
+                format!(
+                    "; a newer Confer may have written it, restart or upgrade this MCP server (Confer {})",
+                    env!("CARGO_PKG_VERSION")
+                )
+            } else {
+                String::new()
+            };
+            anyhow::anyhow!("failed to parse {}: {error}{hint}", self.path.display())
+        })?;
         if !matches!(state.schema_version, 1 | 2 | ROOMS_SCHEMA_VERSION) {
             bail!(
                 "unsupported Confer room cache schema {}",
