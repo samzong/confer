@@ -66,7 +66,7 @@ Messages may run concurrently across different seats. Each seat has one FIFO que
 
 If create_room or add_seat rejects an unavailable agent, the operation leaves room state unchanged. The host may choose another agent according to the user's instructions or personal skill and submit a new request. Confer does not replace explicitly selected agents. A failed delivery may already have changed files; verify its effects before retrying or assigning the work elsewhere.
 
-After an MCP restart, pending Queue messages are lost and unfinished deliveries are uncertain. list_rooms and send_message receipts report `previous_delivery_uncertain: true` for such a seat. Verify its native work, for example through its resume command and the workspace state, before sending another message; never infer that the released lease means the previous agent stopped.
+After an MCP restart, pending Queue messages are lost and unfinished deliveries are uncertain; list_rooms and send_message receipts mark such seats with `previous_delivery_uncertain`. Verify native work before sending another message; never infer that the released lease means the previous agent stopped.
 
 After upgrading Confer, refresh the MCP connection and tool schemas. target_size now counts execution seats only; update older calls that included the host. Creation requires a positive target_size or at least one seat, and create_room and add_seat no longer return replacements. Calls that omit the required workspace are rejected; do not infer a fallback from the server's working directory or silently relocate an older room.
 
