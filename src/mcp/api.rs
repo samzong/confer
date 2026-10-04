@@ -190,7 +190,7 @@ pub(super) fn json_result<T: Serialize>(result: Result<T>) -> CallToolResult {
     match result {
         Ok(value) => CallToolResult::structured(to_json(value)),
         Err(error) => CallToolResult::structured_error(to_json(ErrorOutput {
-            error: error.to_string(),
+            error: format!("{error:#}"),
         })),
     }
 }
