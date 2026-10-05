@@ -1,6 +1,21 @@
 # Changelog
 
 
+## [0.2.3](https://github.com/samzong/confer/compare/v0.2.2...v0.2.3) (2026-10-05)
+
+
+### Features
+
+* **mcp:** report seats whose last delivery ended without a result ([#18](https://github.com/samzong/confer/issues/18))
+* **adapters:** add OpenCode via native ACP ([#20](https://github.com/samzong/confer/issues/20))
+
+
+### Fixes
+
+* **makefile:** strip header dashes from make help in C locale ([#17](https://github.com/samzong/confer/issues/17))
+* **state:** surface the serde cause when rooms.json cannot be parsed ([#19](https://github.com/samzong/confer/issues/19))
+
+
 ## [0.2.2](https://github.com/samzong/confer/compare/v0.2.1...v0.2.2) (2026-09-26)
 
 
