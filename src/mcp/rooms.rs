@@ -262,6 +262,7 @@ fn detect_host_agent(explicit: Option<&str>) -> Option<String> {
         );
     }
     [
+        ("OPENCODE", "opencode"),
         ("CLAUDE_CODE_SESSION_ID", "claude"),
         ("CODEX_THREAD_ID", "codex"),
         ("CODEX_SESSION_ID", "codex"),

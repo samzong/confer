@@ -63,6 +63,19 @@ fn apply_native_args(invocation: &Invocation, command: &mut Command) -> Result<(
             command.env("KIMI_CODE_HOME", &kimi_home);
             command.arg("acp");
         }
+        AgentKind::Opencode => {
+            command
+                .env("OPENCODE_PERMISSION", r#"{"*":"allow"}"#)
+                .env_remove("OPENCODE_ENABLE_QUESTION_TOOL")
+                .args([
+                    "acp",
+                    "--port",
+                    "0",
+                    "--hostname",
+                    "127.0.0.1",
+                    "--mdns=false",
+                ]);
+        }
         _ => return Err("agent has no native ACP transport".into()),
     }
     Ok(())

@@ -27,6 +27,7 @@ pub(crate) fn validate_seat_config(
             AgentKind::Kimi => {
                 (!["on", "low", "high", "max"].contains(&effort)).then_some("Kimi thinking")
             }
+            AgentKind::Opencode => None,
             AgentKind::Devin => Some("Devin reasoning_effort"),
             _ if !general.contains(&effort) => Some("reasoning_effort"),
             AgentKind::Agy if !["low", "medium", "high"].contains(&effort) => {
@@ -87,6 +88,7 @@ pub(super) fn session_options(invocation: &Invocation) -> Result<Vec<(&str, &str
     let (mode, effort_id) = match invocation.agent {
         AgentKind::Cursor => return cursor_config(model, effort),
         AgentKind::Copilot => (None, "reasoning_effort"),
+        AgentKind::Opencode => (Some(("mode", "build")), "effort"),
         AgentKind::Kimi => (Some(("mode", "auto")), "thinking"),
         _ => return Ok(Vec::new()),
     };

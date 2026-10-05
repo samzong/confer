@@ -63,7 +63,8 @@ pub(crate) fn reserve_session(agent: AgentKind) -> Option<String> {
         | AgentKind::Agy
         | AgentKind::Copilot
         | AgentKind::Kimi
-        | AgentKind::Devin => None,
+        | AgentKind::Devin
+        | AgentKind::Opencode => None,
     }
 }
 
@@ -80,6 +81,7 @@ pub(crate) fn resume_command(
         AgentKind::Agy => format!("agy --conversation {session}"),
         AgentKind::Copilot => format!("copilot --resume={session}"),
         AgentKind::Kimi => format!("kimi --session {session}"),
+        AgentKind::Opencode => format!("opencode --session {session}"),
         AgentKind::Devin => format!("devin --resume {session}"),
         AgentKind::Cursor => return None,
     };
@@ -103,9 +105,11 @@ pub(crate) async fn run(invocation: Invocation) -> AdapterOutput {
         return AdapterOutput::failed(error.to_string());
     }
     match invocation.agent {
-        AgentKind::Grok | AgentKind::Cursor | AgentKind::Copilot | AgentKind::Kimi => {
-            native::run(invocation).await
-        }
+        AgentKind::Grok
+        | AgentKind::Cursor
+        | AgentKind::Copilot
+        | AgentKind::Kimi
+        | AgentKind::Opencode => native::run(invocation).await,
         _ => bridge::run(invocation).await,
     }
 }

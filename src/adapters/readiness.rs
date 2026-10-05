@@ -61,6 +61,7 @@ fn has_local_auth_marker(agent: AgentKind) -> bool {
         AgentKind::Cursor => std::env::var_os("CURSOR_API_KEY").is_some(),
         AgentKind::Grok => std::env::var_os("XAI_API_KEY").is_some(),
         AgentKind::Agy | AgentKind::Kimi | AgentKind::Devin => false,
+        AgentKind::Opencode => true,
         AgentKind::Copilot => [
             "COPILOT_GITHUB_TOKEN",
             "GH_TOKEN",
@@ -96,6 +97,7 @@ fn has_local_auth_marker(agent: AgentKind) -> bool {
                 .is_ok_and(|home| kimi_home_has_auth(&home));
         }
         AgentKind::Devin => return devin_has_credentials(&home),
+        AgentKind::Opencode => return true,
     };
     markers.iter().any(|marker| home.join(marker).is_file())
 }
