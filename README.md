@@ -13,3 +13,5 @@ Every supported agent uses a private per-seat FIFO queue. Idle seats start promp
 ```bash
 brew install samzong/tap/confer
 ```
+
+The optional [duo](skills/duo/SKILL.md) Skill lets the host complete a task with one Confer partner chosen by task type and complexity; `confer skill install` does not install it, so first run `confer skill install` to install the confer Skill for that agent, then manually copy `skills/duo/` into the same skills root so its `../confer/SKILL.md` link resolves.
