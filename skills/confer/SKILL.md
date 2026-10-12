@@ -1,6 +1,6 @@
 ---
 name: confer
-description: Coordinate Claude Code, Codex, Cursor Agent, Grok, Antigravity CLI, GitHub Copilot CLI, Kimi Code, Devin for Terminal, and OpenCode through private local MCP rooms. Trigger when the user asks to consult another agent, have multiple agents investigate independently, divide planning and implementation, compare answers, or request an independent review without copying between terminals.
+description: Coordinate Claude Code, Codex, Cursor Agent, Grok, Antigravity CLI (gemini), GitHub Copilot CLI, Kimi Code, Devin for Terminal, and OpenCode through private local MCP rooms. Trigger when the user asks to consult another agent, have multiple agents investigate independently, divide planning and implementation, compare answers, or request an independent review without copying between terminals.
 ---
 
 # Confer
