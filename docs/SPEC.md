@@ -16,7 +16,7 @@ The supported products can act as external room participants and as MCP hosts:
 | `codex` | Codex | `codex exec` | native `codex mcp` command |
 | `cursor` | Cursor Agent | `agent` or `cursor-agent` | `~/.cursor/mcp.json` |
 | `grok` | Grok Build | `grok` | native `grok mcp` command |
-| `agy` | Antigravity CLI | `agy` | native `agy mcp` command |
+| `agy` | Antigravity CLI (alias: `gemini`; Gemini models use this seat via the `model` field) | `agy` | native `agy mcp` command |
 | `copilot` | GitHub Copilot CLI | `copilot` | native `copilot mcp` command |
 | `kimi` | Kimi Code | `kimi` | `$KIMI_CODE_HOME/mcp.json` (default `~/.kimi-code/mcp.json`) |
 | `devin` | Devin for Terminal | `devin` | native `devin mcp` command |

@@ -49,7 +49,7 @@ impl AgentKind {
             "codex" => Some(Self::Codex),
             "cursor" | "cursor-agent" | "agent" => Some(Self::Cursor),
             "grok" | "grok-build" => Some(Self::Grok),
-            "agy" | "antigravity" | "antigravity-cli" => Some(Self::Agy),
+            "agy" | "antigravity" | "antigravity-cli" | "gemini" => Some(Self::Agy),
             "copilot" | "copilot-cli" | "github-copilot" => Some(Self::Copilot),
             "kimi" | "kimi-code" | "kimi-code-cli" | "kimi-cli" => Some(Self::Kimi),
             "devin" | "devin-cli" => Some(Self::Devin),
@@ -84,6 +84,16 @@ impl AgentKind {
             Self::Devin => "devin",
             Self::Opencode => "opencode",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentKind;
+
+    #[test]
+    fn gemini_parses_as_antigravity() {
+        assert_eq!(AgentKind::parse("gemini"), Some(AgentKind::Agy));
     }
 }
 
