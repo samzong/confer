@@ -1,6 +1,27 @@
 # Changelog
 
 
+## [0.2.4](https://github.com/samzong/confer/compare/v0.2.3...v0.2.4) (2026-10-19)
+
+
+### Features
+
+* **types:** accept gemini as an alias for the Antigravity seat ([#22](https://github.com/samzong/confer/issues/22))
+* **adapters:** stop and report task premise conflicts ([#25](https://github.com/samzong/confer/issues/25))
+* **mcp:** add cancel_delivery for live deliveries ([#27](https://github.com/samzong/confer/issues/27))
+
+
+### Fixes
+
+* **deps:** update rustls to 0.23.46 ([#24](https://github.com/samzong/confer/issues/24))
+
+
+### Documentation
+
+* **skills:** add optional duo skill for host-led collaboration ([#21](https://github.com/samzong/confer/issues/21))
+* **agents:** add merge gate contract ([#23](https://github.com/samzong/confer/issues/23))
+
+
 ## [0.2.3](https://github.com/samzong/confer/compare/v0.2.2...v0.2.3) (2026-10-05)
 
 
