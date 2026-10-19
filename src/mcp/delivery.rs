@@ -13,13 +13,14 @@ use serde::Serialize;
 use tokio::sync::{Mutex, mpsc, watch};
 
 use super::ConferMcp;
-use super::api::{SendMessageArgs, WaitOutputArgs, timestamp};
+use super::api::{CancelDeliveryArgs, SendMessageArgs, WaitOutputArgs, timestamp};
 use crate::adapters::{self, Invocation};
 use crate::state::{StateStore, canonical_workspace, mark_seat_dispatch};
 use crate::types::{AgentKind, RoomRecord, SeatRecord, SeatStatus};
 
 const DEFAULT_WAIT_MS: u64 = 120_000;
 const MAX_WAIT_MS: u64 = 600_000;
+const CANCEL_WAIT_MS: u64 = 8_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,6 +29,7 @@ enum DeliveryStatus {
     Running,
     Completed,
     Failed,
+    Cancelled,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -41,13 +43,17 @@ struct DeliveryState {
     final_answer: Option<String>,
     error: Option<String>,
     resume_command: Option<String>,
+    answer_incomplete: bool,
+    previous_delivery_uncertain: bool,
+    #[serde(skip)]
+    cancellation: adapters::Cancellation,
 }
 
 impl DeliveryState {
     fn terminal(&self) -> bool {
         matches!(
             self.status,
-            DeliveryStatus::Completed | DeliveryStatus::Failed
+            DeliveryStatus::Completed | DeliveryStatus::Failed | DeliveryStatus::Cancelled
         )
     }
 }
@@ -88,6 +94,7 @@ struct QueuedDelivery {
     seat_id: String,
     message: String,
     workspace: PathBuf,
+    cancellation: adapters::Cancellation,
 }
 
 #[cfg(test)]
@@ -137,15 +144,38 @@ impl DeliveryTracker {
         });
     }
 
-    fn set_running(&self, delivery_id: &str) {
+    fn set_running(&self, delivery_id: &str) -> bool {
+        let mut started = false;
         self.update(delivery_id, |delivery| {
-            delivery.status = DeliveryStatus::Running;
+            if delivery.status == DeliveryStatus::Queued {
+                delivery.status = DeliveryStatus::Running;
+                started = true;
+            }
+        });
+        started
+    }
+
+    fn cancel(&self, delivery_id: &str) {
+        self.update(delivery_id, |delivery| {
+            if !delivery.terminal() {
+                delivery.cancellation.cancel();
+                if delivery.status == DeliveryStatus::Queued {
+                    delivery.status = DeliveryStatus::Cancelled;
+                }
+            }
         });
     }
 
     fn set_failed(&self, delivery_id: &str, error: String) {
         self.update(delivery_id, |delivery| {
-            delivery.status = DeliveryStatus::Failed;
+            if delivery.terminal() {
+                return;
+            }
+            delivery.status = if delivery.cancellation.is_cancelled() {
+                DeliveryStatus::Cancelled
+            } else {
+                DeliveryStatus::Failed
+            };
             delivery.final_answer = None;
             delivery.error = Some(error);
         });
@@ -267,6 +297,7 @@ impl ConferMcp {
         });
         let previous_delivery_uncertain = self.store.seat_dispatch_uncertain(&room.id, &seat.id);
         let delivery_id = uuid::Uuid::new_v4().to_string();
+        let cancellation = adapters::Cancellation::default();
         self.runtime.deliveries.insert(DeliveryState {
             delivery_id: delivery_id.clone(),
             room_id: room.id.clone(),
@@ -281,6 +312,9 @@ impl ConferMcp {
             final_answer: None,
             error: error.clone(),
             resume_command: None,
+            answer_incomplete: false,
+            previous_delivery_uncertain: false,
+            cancellation: cancellation.clone(),
         });
         if error.is_none() {
             let queued = QueuedDelivery {
@@ -289,6 +323,7 @@ impl ConferMcp {
                 seat_id: seat.id.clone(),
                 message: message.to_string(),
                 workspace: PathBuf::from(&room.workspace),
+                cancellation,
             };
             let sender = self.worker_sender(seat_key(&room.id, &seat.id)).await;
             if sender.send(queued).is_err() {
@@ -326,6 +361,64 @@ impl ConferMcp {
         ));
         workers.insert(key, sender.clone());
         sender
+    }
+
+    pub(super) async fn cancel_delivery_inner(
+        &self,
+        args: CancelDeliveryArgs,
+    ) -> Result<WaitOutput> {
+        if args.delivery_ids.is_empty() {
+            bail!("delivery_ids must not be empty");
+        }
+        let workspace = canonical_workspace(&args.workspace)?;
+        self.store.room_for_workspace(&args.room_id, &workspace)?;
+        let mut updates = self.runtime.deliveries.subscribe();
+        let deliveries = self
+            .runtime
+            .deliveries
+            .snapshots(&args.room_id, &args.delivery_ids)?;
+        for delivery in deliveries {
+            self.runtime.deliveries.cancel(&delivery.delivery_id);
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(CANCEL_WAIT_MS);
+        loop {
+            let mut deliveries = self
+                .runtime
+                .deliveries
+                .snapshots(&args.room_id, &args.delivery_ids)?;
+            let mut completed = deliveries_completed(&deliveries);
+            let mut timed_out = !completed && tokio::time::Instant::now() >= deadline;
+            if timed_out {
+                for delivery in deliveries
+                    .iter_mut()
+                    .filter(|delivery| !delivery.terminal())
+                {
+                    let id = delivery.delivery_id.clone();
+                    self.runtime.deliveries.update(&id, |state| {
+                        if !state.terminal() {
+                            state.previous_delivery_uncertain = true;
+                            state.cancellation.mark_uncertain();
+                            state.error = Some("cancellation cleanup did not finish within 8s; native work is uncertain".into());
+                        }
+                        *delivery = state.clone();
+                    });
+                }
+                completed = deliveries_completed(&deliveries);
+                timed_out = !completed;
+            }
+            if completed || timed_out {
+                return Ok(WaitOutput {
+                    room_id: args.room_id,
+                    completed,
+                    timed_out,
+                    deliveries,
+                });
+            }
+            tokio::select! {
+                _ = updates.changed() => {}
+                _ = tokio::time::sleep_until(deadline) => {}
+            }
+        }
     }
 
     pub(super) async fn wait_output_inner(&self, args: WaitOutputArgs) -> Result<WaitOutput> {
@@ -408,6 +501,13 @@ fn finish_delivery(
     output_error: Option<String>,
     answer: Option<String>,
 ) {
+    if delivery.cancellation.is_cancelled() && delivery.status == DeliveryStatus::Running {
+        delivery.status = DeliveryStatus::Cancelled;
+        delivery.answer_incomplete = answer.is_some();
+        delivery.final_answer = answer;
+        delivery.error = mismatch.or(persistence_error).or(output_error);
+        return;
+    }
     if output_error.is_none() {
         delivery.final_answer = answer;
     }

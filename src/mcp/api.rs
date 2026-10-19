@@ -88,6 +88,14 @@ pub(super) struct WaitOutputArgs {
     pub(super) timeout_ms: Option<u64>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub(super) struct CancelDeliveryArgs {
+    pub(super) workspace: PathBuf,
+    pub(super) room_id: String,
+    #[schemars(length(min = 1))]
+    pub(super) delivery_ids: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct SeatView {
     id: String,

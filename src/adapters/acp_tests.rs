@@ -51,6 +51,7 @@ fn invocation(first_message: bool) -> Invocation {
         instructions: Some("Review without editing files".into()),
         message: "current request".into(),
         first_message,
+        cancellation: Default::default(),
     }
 }
 
@@ -519,4 +520,61 @@ async fn configuration_failure_before_the_prompt_records_no_native_session() {
         )),
     )
     .await;
+}
+
+#[tokio::test]
+async fn cancellation_notifies_the_active_session_and_keeps_partial_text() {
+    use agent_client_protocol::schema::v1::CancelNotification;
+    let mut invocation = invocation(true);
+    invocation.cancellation = Default::default();
+    let cancellation = invocation.cancellation.clone();
+    let ended = Arc::new(tokio::sync::Notify::new());
+    let cancelled = ended.clone();
+    let (ready, started) = tokio::sync::oneshot::channel();
+    let ready = Arc::new(Mutex::new(Some(ready)));
+    let (client, server) = Channel::duplex();
+    let task = tokio::spawn(async move {
+        Agent
+            .builder()
+            .on_receive_notification(
+                async move |request: CancelNotification, _cx| {
+                    assert_eq!(request.session_id.to_string(), "native-session");
+                    cancelled.notify_one();
+                    Ok(())
+                },
+                agent_client_protocol::on_receive_notification!(),
+            )
+            .on_receive_request(
+                async move |request: UntypedMessage, responder, cx| match request.method() {
+                    "initialize" => responder.respond(json!({"protocolVersion":1})),
+                    "session/new" => responder.respond(json!({"sessionId":"native-session"})),
+                    "session/prompt" => {
+                        cx.send_notification(message("partial answer"))?;
+                        ready.lock().unwrap().take().unwrap().send(()).unwrap();
+                        let ended = ended.clone();
+                        cx.spawn(async move {
+                            ended.notified().await;
+                            responder.respond(json!({"stopReason":"cancelled"}))
+                        })
+                    }
+                    _ => responder.respond_with_error(Error::method_not_found()),
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .connect_to(server)
+            .await
+    });
+    let run = tokio::spawn(acp::run_connection(client, invocation, true));
+    started.await.unwrap();
+    cancellation.cancel();
+    let output = tokio::time::timeout(Duration::from_secs(1), run)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        output.observed_session_id.as_deref(),
+        Some("native-session")
+    );
+    assert_eq!(output.answer.as_deref(), Some("partial answer"));
+    task.await.unwrap().unwrap();
 }

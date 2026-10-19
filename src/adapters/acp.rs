@@ -3,11 +3,11 @@ use std::sync::{Arc, Mutex};
 use crate::types::AgentKind;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    CloseSessionRequest, ContentBlock, InitializeRequest, LoadSessionRequest, NewSessionRequest,
-    NewSessionResponse, PermissionOptionKind, PromptRequest, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-    StopReason, TextContent,
+    CancelNotification, CloseSessionRequest, ContentBlock, InitializeRequest, LoadSessionRequest,
+    NewSessionRequest, NewSessionResponse, PermissionOptionKind, PromptRequest,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    ResumeSessionRequest, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, StopReason, TextContent,
 };
 use agent_client_protocol::{Client, ConnectTo, Error, UntypedMessage};
 use serde_json::{Value, json};
@@ -30,7 +30,9 @@ pub(super) async fn run_connection(
     let notifications = output.clone();
     let state = output.clone();
     let permissions = output.clone();
-    let result = Client.builder()
+    let cancellation = invocation.cancellation.clone();
+    let signal = cancellation.clone();
+    let mut connection = Box::pin(Client.builder()
         .name("confer")
         .on_receive_notification(
             async move |notification: SessionNotification, _cx| {
@@ -157,20 +159,35 @@ pub(super) async fn run_connection(
                 state.lock().expect("ACP output lock").native_id = Some(session.to_string());
             }
 
-            let response = cx
+            let prompt = cx
                 .send_request(PromptRequest::new(
                     session.clone(),
                     vec![ContentBlock::Text(TextContent::new(prompt_text(&invocation)))],
                 ))
-                .block_task()
-                .await;
+                .block_task();
+            tokio::pin!(prompt);
+            let response = tokio::select! {
+                biased;
+                response = &mut prompt => response,
+                _ = signal.cancelled(), if native => {
+                    super::process::stop_cancelled_descendants(&signal).await;
+                    cx.send_notification(CancelNotification::new(session.clone()))?;
+                    prompt.await
+                }
+            };
             if let Ok(response) = &response {
+                if response.stop_reason == StopReason::EndTurn {
+                    signal.finish();
+                }
                 let mut output = state.lock().expect("ACP output lock");
                 if !native {
                     output.native_id = response.meta.as_ref()
                         .and_then(|meta| meta.get("confer.nativeSessionId"))
                         .and_then(Value::as_str).map(str::to_owned);
                 }
+            }
+            if signal.is_cancelled() {
+                super::process::stop_cancelled_descendants(&signal).await;
             }
             state.lock().expect("ACP output lock").active_session = None;
             let close = if caps.session_capabilities.close.is_some() {
@@ -185,8 +202,15 @@ pub(super) async fn run_connection(
                 return Err(Error::new(-32000, format!("agent stopped: {:?}", response.stop_reason)));
             }
             Ok(())
-        })
-        .await;
+        }));
+    let result = tokio::select! {
+        result = &mut connection => result,
+        _ = cancellation.grace_expired(), if native => Err(Error::new(-32000, "cancellation grace expired; terminating agent")),
+    };
+    if cancellation.is_cancelled() {
+        super::process::stop_cancelled_descendants(&cancellation).await;
+    }
+    drop(connection);
     let mut output = output.lock().expect("ACP output lock");
     let error = result.err().map(|error| {
         if let Some(id) = error

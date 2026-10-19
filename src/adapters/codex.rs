@@ -143,14 +143,27 @@ impl Connection {
             .context("Codex returned no turn ID")?
             .to_owned();
         let mut pending = std::mem::take(&mut self.events).into_iter();
+        let mut interrupted = false;
         let mut answer = None;
         loop {
             let event = match pending.next() {
                 Some(event) => event,
-                None => self.read().await?,
+                None => tokio::select! {
+                    biased;
+                    event = self.read() => event?,
+                    _ = invocation.cancellation.cancelled(), if !interrupted => {
+                        interrupted = true;
+                        super::process::stop_cancelled_descendants(&invocation.cancellation).await;
+                        self.next_id += 1;
+                        self.write(json!({"id":self.next_id,"method":"turn/interrupt","params":{"threadId":thread,"turnId":turn}})).await?;
+                        continue;
+                    }
+                },
             };
             if event.get("id").is_some() {
-                self.respond_to_request(&event).await?;
+                if event.get("method").is_some() {
+                    self.respond_to_request(&event).await?;
+                }
                 continue;
             }
             let params = &event["params"];
@@ -176,6 +189,9 @@ impl Connection {
                         for item in items {
                             answer = final_message(item).or(answer);
                         }
+                    }
+                    if answer.as_ref().is_some_and(|text| !text.is_empty()) {
+                        invocation.cancellation.finish();
                     }
                     tokio::time::timeout(
                         std::time::Duration::from_secs(3),
@@ -207,11 +223,15 @@ pub(super) async fn run(invocation: Invocation, prompt: &str) -> AdapterOutput {
         events: Vec::new(),
     };
     let mut observed_session_id = None;
-    let result = connection
-        .execute(&invocation, prompt, &mut observed_session_id)
-        .await;
+    let result = tokio::select! {
+        result = connection.execute(&invocation, prompt, &mut observed_session_id) => result,
+        _ = invocation.cancellation.grace_expired() => Err(anyhow::anyhow!("cancellation grace expired; terminating Codex")),
+    };
+    if invocation.cancellation.is_cancelled() {
+        super::process::stop_cancelled_descendants(&invocation.cancellation).await;
+    }
     drop(connection);
-    let status = super::reap(&mut child).await;
+    let status = super::process::reap_with_cancellation(&mut child, &invocation.cancellation).await;
     let stderr = stderr.finish().await;
     let stderr = String::from_utf8_lossy(&stderr);
     let result = match status {

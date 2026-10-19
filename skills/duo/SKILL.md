@@ -40,6 +40,8 @@ Give every dispatch what the partner needs to work independently: the goal, inpu
 
 Check the actual result and the affected entry point before deciding the next step; a finished delivery is not task acceptance. Aim follow-up work at a specific gap. When there is no new evidence or progress, stop repeating the discussion and switch to a verifiable method.
 
+When new information changes an active task, use `cancel_delivery` under the confer rules. Wait for `cancelled` before a revised prompt or write handoff. Other deliveries queued before cancellation still run in FIFO order, even when cancellation reports uncertainty. To inspect uncertain work first, cancel those queued deliveries before checking it. The uncertainty flag clears when the next delivery starts processing on that seat, even if readiness or seat validation fails before dispatch. Cancel each superseded delivery. A `cancelled` result only confirms that the process tree Confer can track stopped. Detached or reparented processes, such as background daemons or development servers, can continue running. The host must inspect these processes separately. Cancellation does not undo side effects. Inspect the actual changes before transferring write ownership. Do not retire a seat to interrupt it.
+
 A wait timeout is not a failure. Keep waiting or verify the status; until execution is confirmed finished, do not resend the work or take over the same write scope. After a failed or interrupted execution, verify the status and side effects before deciding how to continue.
 
 ## Finish
