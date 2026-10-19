@@ -1,5 +1,6 @@
 mod config;
 
+use crate::install_host::{InstallHost, supported_host_ids};
 use config::{remove_mcp_config, write_mcp_config};
 
 use std::path::PathBuf;
@@ -43,13 +44,13 @@ pub(crate) fn uninstall(agents: &[String], dry_run: bool) -> Result<()> {
     )
 }
 
-fn resolve_hosts(agents: &[String]) -> Result<Vec<AgentKind>> {
+fn resolve_hosts(agents: &[String]) -> Result<Vec<InstallHost>> {
     if agents.is_empty() || agents.iter().any(|agent| agent.trim() == "*") {
-        return Ok(AgentKind::ALL.to_vec());
+        return Ok(InstallHost::all());
     }
     let mut hosts = Vec::new();
     for agent in agents {
-        let host = AgentKind::parse(agent).with_context(|| {
+        let host = InstallHost::parse(agent).with_context(|| {
             format!(
                 "unknown MCP host '{}'; supported hosts: {}",
                 agent.trim(),
@@ -86,7 +87,10 @@ fn resolve_bin(bin: Option<PathBuf>) -> Result<String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
-fn add_args(host: AgentKind, bin: &str) -> Option<Vec<&str>> {
+fn add_args(host: InstallHost, bin: &str) -> Option<Vec<&str>> {
+    let InstallHost::Agent(host) = host else {
+        return None;
+    };
     let mut args = match host {
         AgentKind::Claude | AgentKind::Grok | AgentKind::Devin => {
             vec!["mcp", "add", "--scope", "user", SERVER_NAME, "--"]
@@ -99,7 +103,10 @@ fn add_args(host: AgentKind, bin: &str) -> Option<Vec<&str>> {
     Some(args)
 }
 
-fn remove_args(host: AgentKind) -> Option<Vec<&'static str>> {
+fn remove_args(host: InstallHost) -> Option<Vec<&'static str>> {
+    let InstallHost::Agent(host) = host else {
+        return None;
+    };
     Some(match host {
         AgentKind::Claude => vec!["mcp", "remove", SERVER_NAME, "--scope", "user"],
         AgentKind::Grok | AgentKind::Devin => {
@@ -113,7 +120,7 @@ fn remove_args(host: AgentKind) -> Option<Vec<&'static str>> {
 }
 
 fn run_hosts(
-    hosts: Vec<AgentKind>,
+    hosts: Vec<InstallHost>,
     agents: &[String],
     dry_run: bool,
     action: HostAction,
@@ -122,7 +129,7 @@ fn run_hosts(
     let mut changed = 0usize;
     let mut errors = Vec::new();
     for host in hosts {
-        let program = host_program(host);
+        let program = host.program();
         if program.is_none() && (discover || !uses_config_file(host)) {
             eprintln!("skipped {}: executable is not on PATH", host.id());
             continue;
@@ -154,7 +161,7 @@ fn run_hosts(
 }
 
 fn apply_host(
-    host: AgentKind,
+    host: InstallHost,
     program: Option<&str>,
     dry_run: bool,
     action: &HostAction,
@@ -187,7 +194,7 @@ fn apply_host(
             }
         }
     } else {
-        let path = mcp_config_path(host)?;
+        let path = host.config_path()?;
         if dry_run {
             println!(
                 "{} {} ({SERVER_NAME})",
@@ -249,41 +256,15 @@ fn run_host_command(
     bail!("{}: {}", display_command(program, args), detail)
 }
 
-fn uses_config_file(host: AgentKind) -> bool {
-    matches!(
-        host,
-        AgentKind::Cursor | AgentKind::Kimi | AgentKind::Opencode
+fn uses_config_file(host: InstallHost) -> bool {
+    add_args(host, DEFAULT_BIN).is_none()
+}
+
+pub(crate) fn host_help() -> String {
+    format!(
+        "Target host: {}. Repeat for multiple hosts. Use '*' for all installed CLIs.",
+        supported_host_ids()
     )
-}
-
-fn mcp_config_path(host: AgentKind) -> Result<PathBuf> {
-    match host {
-        AgentKind::Cursor => Ok(dirs::home_dir()
-            .context("cannot determine home directory")?
-            .join(".cursor/mcp.json")),
-        AgentKind::Kimi => Ok(crate::adapters::resolve_kimi_home(
-            std::env::var_os("KIMI_CODE_HOME"),
-            dirs::home_dir(),
-        )?
-        .join("mcp.json")),
-        AgentKind::Opencode => Ok(std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
-            .context("cannot determine OpenCode config directory")?
-            .join("opencode/opencode.json")),
-        _ => bail!("{} does not use an MCP config file", host.id()),
-    }
-}
-
-fn host_program(host: AgentKind) -> Option<String> {
-    crate::adapters::find_executable(host)?
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-}
-
-fn supported_host_ids() -> String {
-    AgentKind::ALL.map(AgentKind::id).join(", ")
 }
 
 fn display_command(program: &str, args: &[&str]) -> String {
@@ -326,7 +307,7 @@ fn looks_like_already_exists(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::config::read_mcp_config;
-    use super::{add_args, remove_args, uses_config_file};
+    use super::{InstallHost, add_args, remove_args, uses_config_file};
     use crate::types::AgentKind;
 
     #[test]
@@ -364,19 +345,19 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                add_args(host, "confer").unwrap(),
+                add_args(InstallHost::Agent(host), "confer").unwrap(),
                 add.split_whitespace().collect::<Vec<_>>()
             );
             assert_eq!(
-                remove_args(host).unwrap(),
+                remove_args(InstallHost::Agent(host)).unwrap(),
                 remove.split_whitespace().collect::<Vec<_>>()
             );
-            assert!(!uses_config_file(host));
+            assert!(!uses_config_file(InstallHost::Agent(host)));
         }
         for host in [AgentKind::Cursor, AgentKind::Kimi, AgentKind::Opencode] {
-            assert!(add_args(host, "confer").is_none());
-            assert!(remove_args(host).is_none());
-            assert!(uses_config_file(host));
+            assert!(add_args(InstallHost::Agent(host), "confer").is_none());
+            assert!(remove_args(InstallHost::Agent(host)).is_none());
+            assert!(uses_config_file(InstallHost::Agent(host)));
         }
     }
 
@@ -433,8 +414,8 @@ mod tests {
             std::env::current_dir().unwrap().canonicalize().unwrap(),
             isolated
         );
-        let path = super::mcp_config_path(AgentKind::Cursor).unwrap();
-        let kimi_path = super::mcp_config_path(AgentKind::Kimi).unwrap();
+        let path = InstallHost::Agent(AgentKind::Cursor).config_path().unwrap();
+        let kimi_path = InstallHost::Agent(AgentKind::Kimi).config_path().unwrap();
         assert_eq!(
             kimi_path,
             dirs::home_dir()
@@ -447,14 +428,14 @@ mod tests {
             std::env::set_var("KIMI_CODE_HOME", &custom);
         }
         assert_eq!(
-            super::mcp_config_path(AgentKind::Kimi).unwrap(),
+            InstallHost::Agent(AgentKind::Kimi).config_path().unwrap(),
             custom.join("mcp.json")
         );
         unsafe {
             std::env::set_var("KIMI_CODE_HOME", "relative-kimi-home");
         }
         assert_eq!(
-            super::mcp_config_path(AgentKind::Kimi).unwrap(),
+            InstallHost::Agent(AgentKind::Kimi).config_path().unwrap(),
             isolated.join("relative-kimi-home").join("mcp.json")
         );
         unsafe {
@@ -469,7 +450,7 @@ mod tests {
                 assert!(!kimi_path.exists());
             }
             for host in AgentKind::ALL {
-                if !uses_config_file(host) {
+                if !uses_config_file(InstallHost::Agent(host)) {
                     assert!(super::install(&[host.id().into()], dry_run, None).is_err());
                     assert!(super::uninstall(&[host.id().into()], dry_run).is_err());
                 }

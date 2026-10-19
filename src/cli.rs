@@ -4,7 +4,11 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
-use crate::{mcp, mcp_host, types::AgentKind};
+use crate::{
+    install_host::{self, InstallHost},
+    mcp, mcp_host,
+    types::AgentKind,
+};
 
 #[derive(Parser)]
 #[command(name = "confer", version, about = "Local multi-agent rooms over MCP")]
@@ -40,7 +44,7 @@ enum McpCommands {
     Install {
         #[arg(
             long = "agent",
-            help = "Target host: claude, codex, cursor, grok, agy, copilot, kimi, devin, or opencode. Repeat for multiple hosts. Use '*' for all."
+            help = mcp_host::host_help()
         )]
         agents: Vec<String>,
         #[arg(long, help = "Print host changes without applying them")]
@@ -52,7 +56,7 @@ enum McpCommands {
     Uninstall {
         #[arg(
             long = "agent",
-            help = "Target host: claude, codex, cursor, grok, agy, copilot, kimi, devin, or opencode. Repeat for multiple hosts. Use '*' for all."
+            help = mcp_host::host_help()
         )]
         agents: Vec<String>,
         #[arg(long, help = "Print host changes without applying them")]
@@ -68,7 +72,7 @@ enum SkillCommands {
         scope: Option<String>,
         #[arg(
             long = "agent",
-            help = "Target agent: claude, codex, cursor, grok, agy, copilot, kimi, devin, or opencode. Repeat for multiple agents. Use '*' for all."
+            help = format!("Target host: {}. Repeat for multiple hosts. Use '*' for all.", install_host::supported_host_ids())
         )]
         agents: Vec<String>,
         #[arg(long, help = "Show the Kitup install plan without writing")]
@@ -122,9 +126,14 @@ fn run_skill_install(
     });
     kitup::install_flag_error(&flags.errors)?;
     let agents = supported_skill_agents(flags.agents, flags.scope)?;
+    let hosts_file = install_host::skill_hosts_file(flags.scope, &agents)?;
+    let base = kitup::BaseOptions {
+        hosts_file: hosts_file.as_ref().map(|file| file.path().to_path_buf()),
+        ..Default::default()
+    };
     let report = kitup::run_bundled_skill_install(&kitup::InstallWorkflowOptions {
         install: kitup::InstallOptions {
-            base: kitup::BaseOptions::default(),
+            base,
             app_id: "confer".into(),
             skill_bundle: skill_bundle(),
             scope: flags.scope,
@@ -147,7 +156,10 @@ fn supported_skill_agents(
     selector: kitup::AgentSelector,
     scope: kitup::Scope,
 ) -> Result<kitup::AgentSelector> {
-    let supported = AgentKind::ALL.map(AgentKind::skill_host_id);
+    let supported = InstallHost::all()
+        .into_iter()
+        .map(InstallHost::skill_host_id)
+        .collect::<Vec<_>>();
     let selected = match selector {
         kitup::AgentSelector::Auto => {
             let mut detected = kitup::detect_hosts(&kitup::BaseOptions::default(), Some(scope))
@@ -156,6 +168,14 @@ fn supported_skill_agents(
                 .map(|host| host.id)
                 .filter(|id| supported.contains(&id.as_str()))
                 .collect::<Vec<_>>();
+            for host in InstallHost::ADDITIONAL {
+                if let Some(present) = host.skill_auto_detection(scope)? {
+                    detected.retain(|id| id != host.skill_host_id());
+                    if present {
+                        detected.push(host.skill_host_id().into());
+                    }
+                }
+            }
             if !detected.iter().any(|id| id == "kimi-cli")
                 && crate::adapters::check_readiness(AgentKind::Kimi).locally_ready
             {
@@ -167,10 +187,10 @@ fn supported_skill_agents(
         kitup::AgentSelector::Explicit(values) => {
             let mut selected = Vec::new();
             for value in values {
-                let agent = AgentKind::parse(&value).with_context(|| {
+                let agent = InstallHost::parse(&value).with_context(|| {
                     format!(
                         "unsupported Skill host '{value}'; supported hosts: {}",
-                        supported_skill_ids()
+                        install_host::supported_host_ids()
                     )
                 })?;
                 let mapped = agent.skill_host_id();
@@ -185,10 +205,6 @@ fn supported_skill_agents(
         bail!("no supported Skill hosts were detected");
     }
     Ok(kitup::AgentSelector::Explicit(selected))
-}
-
-fn supported_skill_ids() -> String {
-    AgentKind::ALL.map(AgentKind::id).join(", ")
 }
 
 fn skill_bundle() -> kitup::SkillBundle {
