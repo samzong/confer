@@ -713,7 +713,7 @@ async fn uncancelled_reap_preserves_descendant_cleanup() {
     let mut child = tokio::process::Command::new("python3")
         .args(["-c", r#"
 import subprocess,sys,time
-subprocess.Popen([sys.executable,'-c',"import sys,time; time.sleep(4); open(sys.argv[1],'w').write('done')",sys.argv[1]],start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+subprocess.Popen([sys.executable,'-c',"import pathlib,sys,time; time.sleep(4); path=pathlib.Path(sys.argv[1]); temporary=path.with_suffix('.tmp'); temporary.write_text('done'); temporary.replace(path)",sys.argv[1]],start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 open(sys.argv[2],'w').write('ready')
 time.sleep(30)
 "#])
