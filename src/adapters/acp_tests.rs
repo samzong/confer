@@ -139,6 +139,7 @@ async fn run_script(
                             ContentBlock::Text(text) => Some(text.text.as_str()),
                             _ => None,
                         }).collect::<String>();
+                        assert!(text.starts_with(super::PROMPT_PREAMBLE));
                         assert!(text.contains(&expected_message));
                         if let Some(instructions) = &expected_instructions {
                             assert!(text.contains(instructions));

@@ -177,6 +177,12 @@ Explicit `--agent cursor`, `--agent kimi`, and `--agent opencode` registration a
 
 ## Adapter contract
 
+Confer prepends this fixed preamble to every delivery, before any seat instructions and the message:
+
+> Do not call Confer MCP tools. Respond directly to the room host. If a required task premise proves false or the requested action conflicts with observed code or facts, stop. Report the conflict and evidence to the host instead of working around it.
+
+This instructs the seat to stop and report conflicting evidence. Confer does not enforce the seat's compliance.
+
 Every adapter must:
 
 - resolve its supported executable without scanning unrelated agents;
