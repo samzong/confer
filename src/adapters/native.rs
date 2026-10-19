@@ -18,8 +18,9 @@ pub(super) async fn run(invocation: Invocation) -> AdapterOutput {
         child.stdin.take().expect("piped stdin").compat_write(),
         child.stdout.take().expect("piped stdout").compat(),
     );
+    let cancellation = invocation.cancellation.clone();
     let mut result = acp::run_connection(transport, invocation, true).await;
-    let status = super::reap(&mut child).await;
+    let status = super::process::reap_with_cancellation(&mut child, &cancellation).await;
     let stderr = stderr.finish().await;
     let stderr = String::from_utf8_lossy(&stderr);
     let failure = match status {
@@ -98,6 +99,7 @@ mod tests {
             instructions: None,
             message: "Analyze this".into(),
             first_message: true,
+            cancellation: Default::default(),
         };
         let mut command = invocation.command();
         apply_native_args(&invocation, &mut command).unwrap();

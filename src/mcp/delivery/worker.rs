@@ -7,11 +7,17 @@ pub(super) async fn run_seat_worker(
     activity: Option<Arc<crate::mcp::activity::Instance>>,
 ) {
     while let Some(queued) = receiver.recv().await {
+        if queued.cancellation.is_cancelled() {
+            continue;
+        }
         let session_guard = loop {
             match store.try_acquire_seat_lease(&queued.room_id, &queued.seat_id) {
                 Ok(guard) => break Some(guard),
                 Err(error) if error.to_string().starts_with("seat_busy:") => {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    tokio::select! {
+                        _ = queued.cancellation.cancelled() => break None,
+                        _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+                    }
                 }
                 Err(error) => {
                     deliveries.set_failed(&queued.delivery_id, error.to_string());
@@ -30,10 +36,42 @@ pub(super) async fn run_seat_worker(
                 "failed to record delivery dispatch: {error}"
             )),
         };
-        if let Err(error) = result {
-            deliveries.set_failed(&queued.delivery_id, format!("{error:#}"));
+        let preserve_uncertainty = match &result {
+            Ok(completion) => {
+                completion.persistence_error.is_some()
+                    || completion.mismatch.is_some()
+                    || (queued.cancellation.is_cancelled() && !completion.session_known)
+            }
+            Err(_) => queued.cancellation.is_cancelled(),
+        };
+        let dispatched = deliveries
+            .states
+            .borrow()
+            .get(&queued.delivery_id)
+            .is_some_and(|delivery| delivery.status == DeliveryStatus::Running);
+        let preserve_uncertainty = dispatched
+            && queued.cancellation.is_cancelled()
+            && (preserve_uncertainty || queued.cancellation.is_uncertain());
+        if preserve_uncertainty {
+            deliveries.update(&queued.delivery_id, |delivery| {
+                delivery.previous_delivery_uncertain = true;
+            });
         }
-        let _ = lease.set_len(0);
+        if !preserve_uncertainty {
+            let _ = lease.set_len(0);
+        }
+        drop(lease);
+        match result {
+            Ok(completion) => deliveries.finish(
+                &queued.delivery_id,
+                completion.mismatch,
+                completion.persistence_error,
+                completion.output.error,
+                completion.output.answer,
+                completion.resume_command,
+            ),
+            Err(error) => deliveries.set_failed(&queued.delivery_id, format!("{error:#}")),
+        }
     }
 }
 
@@ -42,7 +80,7 @@ async fn process_queued_delivery(
     store: &StateStore,
     deliveries: &DeliveryTracker,
     activity: Option<&Arc<crate::mcp::activity::Instance>>,
-) -> Result<()> {
+) -> Result<Completion> {
     let room = store.room_for_workspace(&queued.room_id, &queued.workspace)?;
     let seat = room
         .seats
@@ -60,7 +98,9 @@ async fn process_queued_delivery(
                 .unwrap_or_else(|| "agent is not locally ready".into())
         );
     }
-    deliveries.set_running(&queued.delivery_id);
+    if !deliveries.set_running(&queued.delivery_id) {
+        bail!("delivery was cancelled before dispatch");
+    }
     let _activity = activity.map(|instance| instance.start(&queued.delivery_id, &room, seat));
     let first_message = seat.native_session_id.is_none();
     let executable = readiness
@@ -82,8 +122,20 @@ async fn process_queued_delivery(
         instructions: seat.instructions.clone(),
         message: queued.message.clone(),
         first_message,
+        cancellation: queued.cancellation.clone(),
     };
-    let output = adapters::run(invocation).await;
+    let mut output = adapters::run(invocation).await;
+    if queued.cancellation.is_cancelled()
+        && output.observed_session_id.is_none()
+        && seat.native_session_id.is_none()
+    {
+        let detail =
+            "no native session was established; the next delivery will create a new native session";
+        output.error = Some(match output.error {
+            Some(error) => format!("{error}; {detail}"),
+            None => detail.into(),
+        });
+    }
     let expected_session = reserved;
     let (mismatch, observed_session) = native_session_outcome(
         expected_session.as_deref(),
@@ -97,15 +149,24 @@ async fn process_queued_delivery(
         .filter(|_| persistence_error.is_none())
         .or(seat.native_session_id.as_deref())
         .and_then(|session| adapters::resume_command(seat.agent, &room.workspace, session));
-    deliveries.finish(
-        &queued.delivery_id,
+    let session_known = persistence_error.is_none()
+        && mismatch.is_none()
+        && (observed_session.is_some() || seat.native_session_id.is_some());
+    Ok(Completion {
+        session_known,
         mismatch,
         persistence_error,
-        output.error,
-        output.answer,
+        output,
         resume_command,
-    );
-    Ok(())
+    })
+}
+
+struct Completion {
+    session_known: bool,
+    mismatch: Option<String>,
+    persistence_error: Option<String>,
+    output: adapters::AdapterOutput,
+    resume_command: Option<String>,
 }
 
 fn persist_native_session(

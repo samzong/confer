@@ -27,21 +27,69 @@ pub(super) async fn run(invocation: Invocation, prompt: &str) -> AdapterOutput {
     };
     let mut lines = BufReader::new(child.stdout.take().expect("piped stdout")).lines();
     let mut raw_lines = Vec::new();
+    let mut terminated = false;
+    let mut stdout_eof = false;
     loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => raw_lines.push(line),
-            Ok(None) => break,
+        let next = tokio::select! {
+            biased;
+            _ = invocation.cancellation.cancelled() => {
+                if !terminated && super::process::terminate(&mut child).await.is_err() {
+                    invocation.cancellation.mark_uncertain();
+                }
+                terminated = true;
+                break;
+            }
+            next = lines.next_line() => next,
+        };
+        match next {
+            Ok(Some(line)) => {
+                if let Ok(value) = serde_json::from_str::<Value>(&line)
+                    && cli::is_final_result(&value)
+                    && cli::extract_native_error(&value).is_none()
+                    && cli::extract_answer(&value).is_some()
+                {
+                    invocation.cancellation.finish();
+                }
+                raw_lines.push(line);
+            }
+            Ok(None) => {
+                stdout_eof = true;
+                break;
+            }
             Err(error) => {
                 raw_lines.push(format!("stdout read failed: {error}"));
                 break;
             }
         }
     }
-    let status = super::reap(&mut child).await;
-    let stderr = String::from_utf8_lossy(&stderr.finish().await).into_owned();
-    let exported = read_export(&export);
     let stdout = raw_lines.join("\n");
     let stdout = stdout.trim();
+    let exported = read_export(&export);
+    if stdout_eof && !stdout.is_empty()
+        || exported
+            .as_ref()
+            .is_some_and(|(_, answer)| answer.is_some())
+    {
+        invocation.cancellation.finish();
+    }
+    let status = if terminated {
+        super::process::wait_after_kill(&mut child).await.map(Some)
+    } else {
+        tokio::select! {
+            status = super::reap(&mut child) => status,
+            _ = invocation.cancellation.cancelled() => {
+                if !terminated && super::process::terminate(&mut child).await.is_err() {
+                        invocation.cancellation.mark_uncertain();
+                    }
+                super::process::wait_after_kill(&mut child).await.map(Some)
+            }
+        }
+    };
+    if status.is_err() && invocation.cancellation.is_cancelled() {
+        invocation.cancellation.mark_uncertain();
+    }
+    let stderr = String::from_utf8_lossy(&stderr.finish().await).into_owned();
+    let exported = read_export(&export).or(exported);
     let (exported_session, exported_answer) = exported.unwrap_or_default();
     // A resumed turn whose export reports a different session id means devin
     // forked or lost the seat's session; fail the delivery instead of letting
@@ -186,6 +234,7 @@ mod tests {
             instructions: None,
             message: "Analyze this".into(),
             first_message: true,
+            cancellation: Default::default(),
         }
     }
 

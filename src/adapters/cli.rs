@@ -38,10 +38,30 @@ pub(super) async fn run(invocation: Invocation, prompt: &str) -> AdapterOutput {
     let mut lines = BufReader::new(child.stdout.take().expect("piped stdout")).lines();
     let mut raw_lines = Vec::new();
     let mut captured = CapturedOutput::default();
+    let mut terminated = false;
     loop {
-        match lines.next_line().await {
+        let next = tokio::select! {
+            biased;
+            _ = invocation.cancellation.cancelled() => {
+                if !terminated && super::process::terminate(&mut child).await.is_err() {
+                    invocation.cancellation.mark_uncertain();
+                }
+                terminated = true;
+                break;
+            }
+            next = lines.next_line() => next,
+        };
+        match next {
             Ok(Some(line)) => match serde_json::from_str::<Value>(&line) {
-                Ok(value) => captured.ingest(&value),
+                Ok(value) => {
+                    captured.ingest(&value);
+                    if captured.error.is_none()
+                        && captured.answer.is_some()
+                        && is_final_result(&value)
+                    {
+                        invocation.cancellation.finish();
+                    }
+                }
                 Err(_) => raw_lines.push(line),
             },
             Ok(None) => break,
@@ -51,7 +71,22 @@ pub(super) async fn run(invocation: Invocation, prompt: &str) -> AdapterOutput {
             }
         }
     }
-    let status = child.wait().await;
+    let status = if terminated {
+        super::process::wait_after_kill(&mut child).await.map(Some)
+    } else {
+        tokio::select! {
+            status = child.wait() => status.map(Some),
+            _ = invocation.cancellation.cancelled() => {
+                if !terminated && super::process::terminate(&mut child).await.is_err() {
+                        invocation.cancellation.mark_uncertain();
+                    }
+                super::process::wait_after_kill(&mut child).await.map(Some)
+            }
+        }
+    };
+    if status.is_err() && invocation.cancellation.is_cancelled() {
+        invocation.cancellation.mark_uncertain();
+    }
     let stderr = stderr.finish().await;
     let stderr = String::from_utf8_lossy(&stderr);
     let raw = raw_lines.join("\n");
@@ -70,7 +105,7 @@ pub(super) async fn run(invocation: Invocation, prompt: &str) -> AdapterOutput {
             "failed to wait for {}: {error}",
             invocation.agent.id()
         )),
-        Ok(status) if !status.success() => Err(error_text(
+        Ok(Some(status)) if !status.success() => Err(error_text(
             &format!("{} exited with {status}", invocation.agent.id()),
             &stderr,
             detail,
@@ -170,6 +205,13 @@ pub(super) fn extract_session_id(value: &Value) -> Option<String> {
         }
     }
     object.values().find_map(extract_session_id)
+}
+
+pub(super) fn is_final_result(value: &Value) -> bool {
+    ["result", "response", "final_output", "output_text"]
+        .iter()
+        .any(|key| value.get(key).is_some_and(Value::is_string))
+        || value.get("stopReason").is_some()
 }
 
 pub(super) fn extract_answer(value: &Value) -> Option<String> {

@@ -2,6 +2,7 @@ mod acp;
 #[cfg(test)]
 mod acp_tests;
 mod bridge;
+mod cancellation;
 mod cli;
 #[cfg(all(test, unix))]
 mod cli_tests;
@@ -15,6 +16,7 @@ mod readiness;
 mod tests;
 
 use crate::types::AgentKind;
+pub(crate) use cancellation::Cancellation;
 use config::validate_invocation;
 pub(crate) use config::validate_seat_config;
 #[cfg(all(test, unix))]
@@ -35,6 +37,7 @@ pub(crate) struct Invocation {
     pub(crate) instructions: Option<String>,
     pub(crate) message: String,
     pub(crate) first_message: bool,
+    pub(crate) cancellation: Cancellation,
 }
 
 impl Invocation {
@@ -104,14 +107,17 @@ pub(crate) async fn run(invocation: Invocation) -> AdapterOutput {
     if let Err(error) = validate_invocation(&invocation) {
         return AdapterOutput::failed(error.to_string());
     }
-    match invocation.agent {
+    let cancellation = invocation.cancellation.clone();
+    let output = match invocation.agent {
         AgentKind::Grok
         | AgentKind::Cursor
         | AgentKind::Copilot
         | AgentKind::Kimi
         | AgentKind::Opencode => native::run(invocation).await,
         _ => bridge::run(invocation).await,
-    }
+    };
+    cancellation.finish();
+    output
 }
 
 impl AdapterOutput {

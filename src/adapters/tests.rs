@@ -16,6 +16,7 @@ fn invocation(agent: AgentKind) -> Invocation {
         instructions: None,
         message: "Analyze this".into(),
         first_message: true,
+        cancellation: Default::default(),
     }
 }
 
@@ -104,6 +105,7 @@ fn cursor_rejects_conflicting_model_options_and_effort() {
         reasoning_effort: Some("high".into()),
         message: "test".into(),
         first_message: false,
+        cancellation: Default::default(),
         ..invocation(AgentKind::Cursor)
     };
     assert!(super::validate_invocation(&invocation).is_err());
@@ -157,6 +159,7 @@ fn builds_agy_command_for_first_and_resume_messages() {
         native_session_id: Some("conv-456".into()),
         message: "Next step".into(),
         first_message: false,
+        cancellation: Default::default(),
         ..invocation(AgentKind::Agy)
     };
     let command = build_command(&resume, &super::prompt_text(&resume)).unwrap();
@@ -167,6 +170,7 @@ fn builds_agy_command_for_first_and_resume_messages() {
     let invalid_resume = Invocation {
         message: "Next step".into(),
         first_message: false,
+        cancellation: Default::default(),
         ..invocation(AgentKind::Agy)
     };
     assert!(build_command(&invalid_resume, &super::prompt_text(&invalid_resume)).is_err());

@@ -18,6 +18,7 @@ fn invocation(directory: &Path, agent: AgentKind, script: &str) -> Invocation {
         instructions: Some("Private seat instructions".into()),
         message: "Current task".into(),
         first_message: true,
+        cancellation: Default::default(),
     }
 }
 
@@ -46,7 +47,10 @@ printf '%s\n' '{"session_id":"native-session","result":"Final answer"}'
         invocation.first_message = false;
         invocation.native_session_id = output.observed_session_id;
         invocation.message = "Follow-up task".into();
+        let cancellation = invocation.cancellation.clone();
         let output = run(invocation).await;
+        cancellation.cancel();
+        assert!(!cancellation.is_cancelled());
         assert!(output.error.is_none(), "{output:?}");
         assert_eq!(
             output.observed_session_id.as_deref(),
@@ -392,4 +396,400 @@ async fn stderr_keeps_error_tail_without_waiting_for_inherited_writer() {
     assert!(!captured.is_empty() && captured.len() < message.len());
     assert!(captured.ends_with(b"FINAL_ERROR_DETAIL"));
     assert!(writer.write_all(b"late").await.is_err());
+}
+
+async fn wait_for_file(path: &Path) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !path.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn cli_cancellation_terminates_the_process_and_preserves_observed_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let invocation = invocation(
+        directory.path(),
+        AgentKind::Claude,
+        r#"
+printf '%s\n' '{"session_id":"cancelled-session","type":"system"}'
+python3 -c 'import os,subprocess; os.setsid(); subprocess.Popen(["sh","-c","sleep 1; printf leaked > late-write"]); open("tool-started","w").write("ready"); import time; time.sleep(60)' &
+while [ ! -f tool-started ]; do sleep 0.01; done
+printf '%s' "$$" > child-pid
+exec sleep 60
+"#,
+    );
+    let cancellation = invocation.cancellation.clone();
+    let task = tokio::spawn(run(invocation));
+    wait_for_file(&directory.path().join("child-pid")).await;
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    cancellation.cancel();
+    let output = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        output.observed_session_id.as_deref(),
+        Some("cancelled-session")
+    );
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    assert!(!directory.path().join("late-write").exists());
+    let pid = std::fs::read_to_string(directory.path().join("child-pid")).unwrap();
+    assert!(
+        !std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+#[tokio::test]
+async fn native_cancellation_kills_an_agent_that_ignores_cancel_after_the_grace() {
+    let directory = tempfile::tempdir().unwrap();
+    let invocation = invocation(directory.path(), AgentKind::Cursor, "exit 1");
+    let script = r#"#!/usr/bin/env python3
+import json,os,sys,subprocess
+open('child-pid','w').write(str(os.getpid()))
+for line in sys.stdin:
+    v=json.loads(line)
+    if v.get('method')=='initialize':
+        print(json.dumps({'jsonrpc':'2.0','id':v['id'],'result':{'protocolVersion':1}}),flush=True)
+    elif v.get('method')=='session/new':
+        print(json.dumps({'jsonrpc':'2.0','id':v['id'],'result':{'sessionId':'native-session'}}),flush=True)
+    elif v.get('method')=='session/prompt':
+        subprocess.Popen(['/bin/sh','-c','sleep 4; printf leaked > late-write'])
+        open('prompt-started','w').write('yes')
+    elif v.get('method')=='session/cancel':
+        open('cancel-seen','w').write(v['params']['sessionId'])
+"#;
+    std::fs::write(&invocation.executable, script).unwrap();
+    let cancellation = invocation.cancellation.clone();
+    let task = tokio::spawn(run(invocation));
+    wait_for_file(&directory.path().join("prompt-started")).await;
+    let start = std::time::Instant::now();
+    cancellation.cancel();
+    let output = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(start.elapsed() >= std::time::Duration::from_secs(3));
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("cancel-seen")).unwrap(),
+        "native-session"
+    );
+    assert_eq!(
+        output.observed_session_id.as_deref(),
+        Some("native-session")
+    );
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    assert!(!directory.path().join("late-write").exists());
+    let pid = std::fs::read_to_string(directory.path().join("child-pid")).unwrap();
+    assert!(
+        !std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+#[tokio::test]
+async fn cli_final_result_prevents_cancellation_during_reaping() {
+    let directory = tempfile::tempdir().unwrap();
+    let invocation = invocation(
+        directory.path(),
+        AgentKind::Claude,
+        r#"
+printf '%s\n' '{"session_id":"finished-session","type":"result","result":"complete answer"}'
+sleep 1
+"#,
+    );
+    let cancellation = invocation.cancellation.clone();
+    let task = tokio::spawn(run(invocation));
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while !cancellation.is_finished() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!task.is_finished());
+    cancellation.cancel();
+    let output = task.await.unwrap();
+    assert!(!cancellation.is_cancelled());
+    assert_eq!(output.answer.as_deref(), Some("complete answer"));
+    assert!(output.error.is_none(), "{output:?}");
+}
+
+#[tokio::test]
+async fn codex_final_answer_prevents_cancellation_during_unsubscribe() {
+    let directory = tempfile::tempdir().unwrap();
+    let invocation = invocation(
+        directory.path(),
+        AgentKind::Codex,
+        r#"
+read -r line
+printf '%s\n' '{"id":1,"result":{}}'
+read -r line
+read -r line
+printf '%s\n' '{"id":2,"result":{"thread":{"id":"native-thread"}}}'
+read -r line
+printf '%s\n' '{"id":3,"result":{"turn":{"id":"active-turn"}}}'
+printf '%s\n' '{"method":"turn/completed","params":{"threadId":"native-thread","turn":{"id":"active-turn","status":"completed","items":[{"type":"agentMessage","phase":"final_answer","text":"complete answer"}]}}}'
+read -r line
+printf '%s' ready > unsubscribing
+sleep 1
+printf '%s\n' '{"id":4,"result":{}}'
+"#,
+    );
+    let cancellation = invocation.cancellation.clone();
+    let task = tokio::spawn(run(invocation));
+    wait_for_file(&directory.path().join("unsubscribing")).await;
+    assert!(!task.is_finished());
+    cancellation.cancel();
+    let output = task.await.unwrap();
+    assert!(!cancellation.is_cancelled());
+    assert_eq!(output.answer.as_deref(), Some("complete answer"));
+    assert!(output.error.is_none(), "{output:?}");
+}
+
+#[tokio::test]
+async fn codex_cancellation_interrupts_the_active_turn() {
+    let directory = tempfile::tempdir().unwrap();
+    let invocation = invocation(
+        directory.path(),
+        AgentKind::Codex,
+        r#"
+read -r line
+printf '%s\n' '{"id":1,"result":{}}'
+read -r line
+read -r line
+printf '%s\n' '{"id":2,"result":{"thread":{"id":"native-thread"}}}'
+read -r line
+printf '%s\n' '{"id":3,"result":{"turn":{"id":"active-turn"}}}'
+printf '%s' ready > turn-started
+read -r line
+printf '%s\n' "$line" > interrupt-request
+printf '%s\n' '{"id":4,"result":{}}'
+printf '%s\n' '{"method":"turn/completed","params":{"threadId":"native-thread","turn":{"id":"active-turn","status":"interrupted","items":[]}}}'
+"#,
+    );
+    let cancellation = invocation.cancellation.clone();
+    let task = tokio::spawn(run(invocation));
+    wait_for_file(&directory.path().join("turn-started")).await;
+    cancellation.cancel();
+    let output = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    let request: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(directory.path().join("interrupt-request")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(request["method"], "turn/interrupt");
+    assert_eq!(request["params"]["threadId"], "native-thread");
+    assert_eq!(request["params"]["turnId"], "active-turn");
+    assert_eq!(output.observed_session_id.as_deref(), Some("native-thread"));
+    assert!(
+        output
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("interrupted")),
+        "{output:?}"
+    );
+}
+
+#[tokio::test]
+async fn acknowledged_native_cancellation_stops_separate_group_tools() {
+    let directory = tempfile::tempdir().unwrap();
+    let invocation = invocation(directory.path(), AgentKind::Cursor, "exit 1");
+    std::fs::write(&invocation.executable, r#"#!/usr/bin/env python3
+import json,sys,subprocess
+pending=None
+for line in sys.stdin:
+    v=json.loads(line)
+    if v.get('method')=='initialize':
+        print(json.dumps({'jsonrpc':'2.0','id':v['id'],'result':{'protocolVersion':1}}),flush=True)
+    elif v.get('method')=='session/new':
+        print(json.dumps({'jsonrpc':'2.0','id':v['id'],'result':{'sessionId':'native-session'}}),flush=True)
+    elif v.get('method')=='session/prompt':
+        pending=v['id']
+        subprocess.Popen(['/bin/sh','-c','sleep 1.5; printf leaked > late-write'],start_new_session=True)
+        open('prompt-started','w').write('yes')
+    elif v.get('method')=='session/cancel':
+        open('cancel-acknowledged','w').write('yes')
+        print(json.dumps({'jsonrpc':'2.0','id':pending,'result':{'stopReason':'cancelled'}}),flush=True)
+"#).unwrap();
+    let cancellation = invocation.cancellation.clone();
+    let task = tokio::spawn(run(invocation));
+    wait_for_file(&directory.path().join("prompt-started")).await;
+    cancellation.cancel();
+    let output = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(directory.path().join("cancel-acknowledged").exists());
+    assert!(
+        output
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("Cancelled")),
+        "{output:?}"
+    );
+    assert_eq!(
+        output.observed_session_id.as_deref(),
+        Some("native-session")
+    );
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    assert!(!directory.path().join("late-write").exists());
+}
+
+#[tokio::test]
+async fn cli_final_result_waits_for_natural_exit_and_cleanup() {
+    for close_stdout in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let script = format!(
+            "printf '%s\\n' '{{\"session_id\":\"finished-session\",\"type\":\"result\",\"result\":\"complete answer\"}}'\n{}\nsleep 4\nprintf cleaned > cleanup-finished",
+            if close_stdout { "exec 1>&-" } else { "" }
+        );
+        let invocation = invocation(directory.path(), AgentKind::Claude, &script);
+        let output = run(invocation).await;
+        assert_eq!(output.answer.as_deref(), Some("complete answer"));
+        assert!(output.error.is_none(), "{output:?}");
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("cleanup-finished")).unwrap(),
+            "cleaned"
+        );
+    }
+}
+
+#[tokio::test]
+async fn devin_stdout_eof_prevents_cancellation_during_cleanup() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut invocation = invocation(
+        directory.path(),
+        AgentKind::Devin,
+        r#"
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--export" ]; then export_path="$2"; fi
+  shift
+done
+printf '%s' '{"session_id":"devin-session","steps":[]}' > "$export_path"
+printf '%s\n' 'Printed answer'
+exec 1>&-
+sleep 1
+printf cleaned > cleanup-finished
+"#,
+    );
+    invocation.native_session_id = Some("devin-session".into());
+    invocation.first_message = false;
+    let cancellation = invocation.cancellation.clone();
+    let task = tokio::spawn(run(invocation));
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while !cancellation.is_finished() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!task.is_finished());
+    cancellation.cancel();
+    let output = task.await.unwrap();
+    assert!(!cancellation.is_cancelled());
+    assert_eq!(output.answer.as_deref(), Some("Printed answer"));
+    assert!(output.error.is_none(), "{output:?}");
+    assert!(directory.path().join("cleanup-finished").exists());
+}
+
+#[tokio::test]
+async fn uncancelled_reap_preserves_descendant_cleanup() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut child = tokio::process::Command::new("python3")
+        .args(["-c", r#"
+import subprocess,sys,time
+subprocess.Popen([sys.executable,'-c',"import sys,time; time.sleep(4); open(sys.argv[1],'w').write('done')",sys.argv[1]],start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+open(sys.argv[2],'w').write('ready')
+time.sleep(30)
+"#])
+        .arg(directory.path().join("cleanup-finished"))
+        .arg(directory.path().join("ready"))
+        .process_group(0)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn().unwrap();
+    wait_for_file(&directory.path().join("ready")).await;
+    let cancellation = super::Cancellation::default();
+    assert!(
+        super::process::reap_with_cancellation(&mut child, &cancellation)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(child.try_wait().unwrap().is_some());
+    wait_for_file(&directory.path().join("cleanup-finished")).await;
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("cleanup-finished")).unwrap(),
+        "done"
+    );
+}
+
+#[tokio::test]
+async fn cancellation_kills_same_group_children_created_after_scan() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let directory = tempfile::tempdir().unwrap();
+    let mut child = tokio::process::Command::new("python3")
+        .args(["-c", r#"
+import signal,subprocess,sys
+sentinel=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+print('ready',flush=True)
+assert sentinel.wait()==-signal.SIGKILL
+print('scanned',flush=True)
+assert sys.stdin.readline().strip()=='spawn'
+subprocess.Popen([sys.executable,'-c',"import sys,time; time.sleep(1); open(sys.argv[1],'w').write('leaked')",sys.argv[1]],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+print('spawned',flush=True)
+"#])
+        .arg(directory.path().join("late-write"))
+        .process_group(0)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn().unwrap();
+    let cancellation = super::Cancellation::default();
+    cancellation.set_process_id(child.id().unwrap());
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap()).lines();
+    assert_eq!(output.next_line().await.unwrap().as_deref(), Some("ready"));
+    cancellation.cancel();
+    let task = tokio::spawn(async move {
+        let status = super::process::reap_with_cancellation(&mut child, &cancellation).await;
+        (status, child)
+    });
+    let scanned = tokio::time::timeout(std::time::Duration::from_secs(2), output.next_line())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(scanned.as_deref(), Some("scanned"));
+    input.write_all(b"spawn\n").await.unwrap();
+    let spawned = tokio::time::timeout(std::time::Duration::from_secs(2), output.next_line())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(spawned.as_deref(), Some("spawned"));
+    let (status, mut child) = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(status.unwrap().unwrap().success());
+    assert!(child.try_wait().unwrap().is_some());
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    assert!(!directory.path().join("late-write").exists());
 }
