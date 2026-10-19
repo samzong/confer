@@ -20,6 +20,27 @@ fn invocation(agent: AgentKind) -> Invocation {
 }
 
 #[test]
+fn prompt_includes_preamble_before_instructions_and_message() {
+    for first_message in [true, false] {
+        for instructions in [None, Some(""), Some("  "), Some(" Private instructions ")] {
+            let invocation = Invocation {
+                first_message,
+                instructions: instructions.map(String::from),
+                ..invocation(AgentKind::Codex)
+            };
+            let prompt = super::prompt_text(&invocation);
+            let mut parts = prompt.split("\n\n");
+            assert_eq!(parts.next(), Some(super::PROMPT_PREAMBLE));
+            if instructions.is_some_and(|value| !value.trim().is_empty()) {
+                assert_eq!(parts.next(), Some("Private instructions"));
+            }
+            assert_eq!(parts.next(), Some(invocation.message.as_str()));
+            assert_eq!(parts.next(), None);
+        }
+    }
+}
+
+#[test]
 fn parses_native_results() {
     for (value, session, answer) in [
         (

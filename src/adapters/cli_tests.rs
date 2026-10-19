@@ -41,6 +41,7 @@ printf '%s\n' '{"session_id":"native-session","result":"Final answer"}'
         assert_eq!(output.answer.as_deref(), Some("Final answer"));
         assert!(output.error.is_none(), "{output:?}");
         let arguments = std::fs::read_to_string(directory.path().join("arguments")).unwrap();
+        assert!(arguments.contains(super::PROMPT_PREAMBLE));
         assert!(arguments.contains("Private seat instructions\n\nCurrent task"));
         invocation.first_message = false;
         invocation.native_session_id = output.observed_session_id;
@@ -52,6 +53,7 @@ printf '%s\n' '{"session_id":"native-session","result":"Final answer"}'
             Some("native-session")
         );
         let arguments = std::fs::read_to_string(directory.path().join("arguments")).unwrap();
+        assert!(arguments.contains(super::PROMPT_PREAMBLE));
         assert!(arguments.contains("Private seat instructions\n\nFollow-up task"));
         assert!(!arguments.contains("Current task"));
     }

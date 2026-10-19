@@ -132,13 +132,15 @@ impl AdapterOutput {
     }
 }
 
+const PROMPT_PREAMBLE: &str = "Do not call Confer MCP tools. Respond directly to the room host. If a required task premise proves false or the requested action conflicts with observed code or facts, stop. Report the conflict and evidence to the host instead of working around it.";
+
 fn prompt_text(invocation: &Invocation) -> String {
     let instructions = invocation
         .instructions
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    std::iter::once("Do not call Confer MCP tools. Respond directly to the room host.")
+    std::iter::once(PROMPT_PREAMBLE)
         .chain(instructions)
         .chain(std::iter::once(invocation.message.as_str()))
         .collect::<Vec<_>>()
