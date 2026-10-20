@@ -24,9 +24,13 @@ pub(crate) fn check_readiness(agent: AgentKind) -> Readiness {
 }
 
 pub(crate) fn find_executable(agent: AgentKind) -> Option<PathBuf> {
+    find_executable_by_names(agent.binary_names())
+}
+
+pub(crate) fn find_executable_by_names(names: &[&str]) -> Option<PathBuf> {
     let paths = std::env::var_os("PATH")?;
     for directory in std::env::split_paths(&paths) {
-        for name in agent.binary_names() {
+        for name in names {
             let candidate = directory.join(name);
             if executable_file(&candidate) {
                 return Some(candidate);

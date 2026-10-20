@@ -3,10 +3,10 @@ use std::{fs, io, path::Path};
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
 
-use super::{SERVER_ARG, SERVER_NAME};
+use super::{InstallHost, SERVER_ARG, SERVER_NAME};
 use crate::types::AgentKind;
 
-pub(super) fn write_mcp_config(host: AgentKind, path: &Path, bin: &str) -> Result<()> {
+pub(super) fn write_mcp_config(host: InstallHost, path: &Path, bin: &str) -> Result<()> {
     update_mcp_config(path, |config| {
         let servers = config
             .as_object_mut()
@@ -34,12 +34,17 @@ pub(super) fn write_mcp_config(host: AgentKind, path: &Path, bin: &str) -> Resul
                 host.id()
             );
         }
-        if host == AgentKind::Opencode {
+        if host == InstallHost::Agent(AgentKind::Opencode) {
             entry.insert("type".into(), Value::String("local".into()));
             entry.insert("command".into(), serde_json::json!([bin, SERVER_ARG]));
             entry.insert("enabled".into(), Value::Bool(true));
         } else {
-            entry.insert("type".into(), Value::String("stdio".into()));
+            if matches!(
+                host,
+                InstallHost::Agent(_) | InstallHost::Droid | InstallHost::Qoder
+            ) {
+                entry.insert("type".into(), Value::String("stdio".into()));
+            }
             entry.insert("command".into(), Value::String(bin.into()));
             entry.insert("args".into(), serde_json::json!([SERVER_ARG]));
         }
@@ -47,7 +52,7 @@ pub(super) fn write_mcp_config(host: AgentKind, path: &Path, bin: &str) -> Resul
     })
 }
 
-pub(super) fn remove_mcp_config(host: AgentKind, path: &Path) -> Result<()> {
+pub(super) fn remove_mcp_config(host: InstallHost, path: &Path) -> Result<()> {
     if !path.is_file() {
         return Ok(());
     }
@@ -104,21 +109,24 @@ fn write_mcp_config_file(path: &Path, config: &Value) -> Result<()> {
     crate::state::write_json_atomic(path, config).context("failed to write MCP config")
 }
 
-fn server_key(host: AgentKind) -> &'static str {
-    if host == AgentKind::Opencode {
+fn server_key(host: InstallHost) -> &'static str {
+    if host == InstallHost::Agent(AgentKind::Opencode) {
         "mcp"
     } else {
         "mcpServers"
     }
 }
 
-fn uses_non_stdio_transport(host: AgentKind, entry: &Map<String, Value>) -> bool {
-    let transport = if host == AgentKind::Opencode {
+fn uses_non_stdio_transport(host: InstallHost, entry: &Map<String, Value>) -> bool {
+    let transport = if host == InstallHost::Agent(AgentKind::Opencode) {
         "local"
     } else {
         "stdio"
     };
-    entry.contains_key("url") || entry.get("type").is_some_and(|value| value != transport)
+    ["url", "httpUrl", "serverUrl", "qoder_url"]
+        .iter()
+        .any(|key| entry.contains_key(*key))
+        || entry.get("type").is_some_and(|value| value != transport)
 }
 
 #[cfg(test)]
@@ -134,7 +142,7 @@ mod tests {
             r#"{"mcpServers":{"other":{"command":"other"},"confer":{"env":{"A":"B"}}}}"#,
         )
         .unwrap();
-        write_mcp_config(AgentKind::Cursor, &path, "/tmp/confer").unwrap();
+        write_mcp_config(InstallHost::Agent(AgentKind::Cursor), &path, "/tmp/confer").unwrap();
         let config = read_mcp_config(&path).unwrap();
         assert_eq!(config["mcpServers"]["other"]["command"], "other");
         assert_eq!(config["mcpServers"]["confer"]["env"]["A"], "B");
@@ -144,7 +152,7 @@ mod tests {
             config["mcpServers"]["confer"]["args"],
             serde_json::json!(["mcp"])
         );
-        remove_mcp_config(AgentKind::Cursor, &path).unwrap();
+        remove_mcp_config(InstallHost::Agent(AgentKind::Cursor), &path).unwrap();
         assert_eq!(
             read_mcp_config(&path).unwrap()["mcpServers"]["other"]["command"],
             "other"
@@ -162,7 +170,7 @@ mod tests {
         let path = dir.path().join("mcp.json");
         std::fs::write(&path, " \n").unwrap();
 
-        write_mcp_config(AgentKind::Kimi, &path, "confer").unwrap();
+        write_mcp_config(InstallHost::Agent(AgentKind::Kimi), &path, "confer").unwrap();
 
         let config = read_mcp_config(&path).unwrap();
         assert_eq!(config["mcpServers"]["confer"]["command"], "confer");
@@ -182,7 +190,7 @@ mod tests {
         });
         std::fs::write(&path, original.to_string()).unwrap();
         for bin in ["confer", "/path with spaces/confer"] {
-            write_mcp_config(AgentKind::Opencode, &path, bin).unwrap();
+            write_mcp_config(InstallHost::Agent(AgentKind::Opencode), &path, bin).unwrap();
             let config = read_mcp_config(&path).unwrap();
             assert_eq!(config["model"], original["model"]);
             assert_eq!(config["permission"], original["permission"]);
@@ -199,7 +207,7 @@ mod tests {
             );
             assert!(config.get("mcpServers").is_none());
         }
-        remove_mcp_config(AgentKind::Opencode, &path).unwrap();
+        remove_mcp_config(InstallHost::Agent(AgentKind::Opencode), &path).unwrap();
         let config = read_mcp_config(&path).unwrap();
         assert!(config["mcp"].get("confer").is_none());
         assert_eq!(config["mcp"]["other"], original["mcp"]["other"]);
@@ -216,7 +224,9 @@ mod tests {
             "invalid",
         ] {
             std::fs::write(&path, body).unwrap();
-            assert!(write_mcp_config(AgentKind::Opencode, &path, "confer").is_err());
+            assert!(
+                write_mcp_config(InstallHost::Agent(AgentKind::Opencode), &path, "confer").is_err()
+            );
             assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
         }
     }

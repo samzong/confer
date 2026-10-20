@@ -14,4 +14,20 @@ Every supported agent uses a private per-seat FIFO queue. Idle seats start promp
 brew install samzong/tap/confer
 ```
 
+Register Confer with installed MCP hosts:
+
+```bash
+confer mcp install
+confer mcp install --agent gemini-cli --agent qwen --agent droid
+confer mcp uninstall --agent qwen
+```
+
+MCP and Skill installation support Claude Code, Codex, Cursor, Grok, Antigravity CLI, GitHub Copilot CLI, Kimi Code, Devin for Terminal, and OpenCode.
+Both commands also support Google Gemini CLI (`gemini-cli`), Qwen Code (`qwen`), Factory Droid (`droid`), Qoder CLI (`qoder`), and Kiro (`kiro`).
+These five additions can host Confer and install its Skill. Seat adapters keep their existing list.
+Use `gemini-cli` for Google Gemini CLI. The existing `gemini` alias selects Antigravity.
+File-based hosts support explicit selection without an installed CLI.
+Use `confer skill install --agent qwen --scope user --dry-run` to preview a Skill install, then replace `--dry-run` with `--yes` to install it.
+Use `--dry-run` to preview changes. See [registration paths and formats](docs/SPEC.md#supported-participants-and-hosts).
+
 The optional [duo](skills/duo/SKILL.md) Skill lets the host complete a task with one Confer partner chosen by task type and complexity; `confer skill install` does not install it, so first run `confer skill install` to install the confer Skill for that agent, then manually copy `skills/duo/` into the same skills root so its `../confer/SKILL.md` link resolves.

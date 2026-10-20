@@ -22,7 +22,9 @@ pub(crate) use config::validate_seat_config;
 #[cfg(all(test, unix))]
 use process::StderrCapture;
 use process::{error_text, reap, redact_secrets, truncate};
-pub(crate) use readiness::{check_readiness, find_executable, readiness, resolve_kimi_home};
+pub(crate) use readiness::{
+    check_readiness, find_executable, find_executable_by_names, readiness, resolve_kimi_home,
+};
 use std::path::PathBuf;
 use tokio::process::Command;
 

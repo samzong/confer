@@ -8,7 +8,7 @@ Confer is a local MCP server for running and resuming installed coding agents. A
 
 ## Supported participants and hosts
 
-The supported products can act as external room participants and as MCP hosts:
+The following products can act as external room participants and as MCP hosts:
 
 | ID | Product | Participant command | MCP registration |
 | --- | --- | --- | --- |
@@ -21,6 +21,27 @@ The supported products can act as external room participants and as MCP hosts:
 | `kimi` | Kimi Code | `kimi` | `$KIMI_CODE_HOME/mcp.json` (default `~/.kimi-code/mcp.json`) |
 | `devin` | Devin for Terminal | `devin` | native `devin mcp` command |
 | `opencode` | OpenCode | `opencode` | `$XDG_CONFIG_HOME/opencode/opencode.json` (default `~/.config/opencode/opencode.json`) |
+
+MCP and Skill installation also support these hosts. They do not become seat adapters.
+All MCP entries below use JSON with a top-level `mcpServers` object and a `command` string plus an `args` array.
+Skill paths are roots containing `confer/SKILL.md`; Kitup selects an existing supported root before the first default root.
+
+| Host ID | Product | User MCP configuration | User / project Skill roots | Official references |
+| --- | --- | --- | --- | --- |
+| `gemini-cli` | Google Gemini CLI | `$GEMINI_CLI_HOME/.gemini/settings.json` (default `~/.gemini/settings.json`) | `~/.gemini/skills` or `~/.agents/skills` / `.agents/skills` or `.gemini/skills` | [Configuration](https://geminicli.com/docs/reference/configuration/), [MCP](https://geminicli.com/docs/tools/mcp-server/), [Skills](https://geminicli.com/docs/cli/skills/) |
+| `qwen` | Qwen Code | `$QWEN_HOME/settings.json` (default `~/.qwen/settings.json`) | `~/.qwen/skills` / `.qwen/skills` | [Configuration](https://qwenlm.github.io/qwen-code-docs/en/users/configuration/settings/), [MCP](https://github.com/QwenLM/qwen-code/blob/main/docs/developers/tools/mcp-server.md), [Skills](https://qwenlm.github.io/qwen-code-docs/en/users/features/skills/) |
+| `droid` | Factory Droid | `~/.factory/mcp.json` | `~/.factory/skills` / `.factory/skills` | [MCP](https://github.com/Factory-AI/factory/blob/main/docs/cli/configuration/mcp.mdx), [Skills](https://github.com/Factory-AI/factory/blob/main/docs/cli/configuration/skills.mdx) |
+| `qoder` | Qoder CLI | `$QODER_CONFIG_DIR/settings.json` (default `~/.qoder/settings.json`) | `~/.qoder/skills` / `.qoder/skills` | [Configuration](https://docs.qoder.com/cli/settings-reference), [MCP](https://docs.qoder.com/cli/mcp-reference), [Skills](https://docs.qoder.com/cli/Skills) |
+| `kiro` | Kiro IDE and CLI | `~/.kiro/settings/mcp.json` | `~/.kiro/skills` / `.kiro/skills` | [MCP](https://kiro.dev/docs/mcp/configuration/), [Skills](https://kiro.dev/docs/skills/) |
+
+`gemini-cli` selects Google Gemini CLI. The existing `gemini` alias still selects Antigravity (`agy`).
+Droid and Qoder entries include `type: "stdio"`. The other added hosts use their default stdio transport without a `type` field.
+Qwen expands a leading `~/` in `QWEN_HOME` and resolves relative paths from the current directory.
+When `GEMINI_CLI_HOME`, `QWEN_HOME`, or `QODER_CONFIG_DIR` is set, user Skill installation uses that configuration directory's `skills` subdirectory through Kitup.
+Kitup host specifications require user paths inside `HOME`. An override outside `HOME` fails before installation instead of writing to the default path.
+Auto selection validates overrides only for detected hosts. An absent host with an external override does not block other installations.
+Project Skill paths and explicitly selected unrelated hosts stay unchanged.
+Kiro custom agents may need MCP configuration inclusion and Skill resource URIs enabled in their agent configuration. Installation does not change those settings.
 
 MCP is the public protocol. Every seat uses an ACP v1 lifecycle internally. Cursor, Grok, Copilot, Kimi Code, and OpenCode use native ACP over stdio; Codex uses an in-process ACP bridge to its app-server; Claude, Antigravity, and Devin use in-process ACP bridges to their native headless commands. Confer ships one Rust binary and requires no separate bridge runtime.
 
@@ -181,13 +202,26 @@ confer skill install [--scope user|project] [--agent <id>]... [--dry-run] [--yes
 
 `confer mcp` serves stdio MCP. Room operations are not exposed as ordinary CLI commands.
 
-MCP and Skill installation are deliberately independent. `confer mcp install` never installs the Skill, and `confer skill install` never changes MCP configuration. Both installation commands support Claude Code, Codex, Cursor, Grok, Antigravity CLI, GitHub Copilot CLI, Kimi Code, Devin for Terminal, and OpenCode.
+MCP and Skill installation are deliberately independent. `confer mcp install` never installs the Skill, and `confer skill install` never changes MCP configuration. Both installation commands support the same fourteen hosts in the two tables.
 
-`confer skill install` embeds the [canonical Skill](../skills/confer/SKILL.md) and delegates target paths, conflict protection, updates, scope, and dry-run reporting to Kitup. User scope is the default.
+`confer skill install` embeds the [canonical Skill](../skills/confer/SKILL.md) and delegates target paths, conflict protection, updates, scope, and dry-run reporting to Kitup. User scope is the default. In a non-interactive shell, specify `--scope user` or `--scope project`, or use `--yes` to accept user scope.
 
 `confer mcp install` follows each host’s supported registration mechanism. Repeated installation updates the Confer-owned registration without deleting unrelated MCP entries. Uninstall removes only the `confer` entry.
 
-Explicit `--agent cursor`, `--agent kimi`, and `--agent opencode` registration and removal edit that host's MCP configuration (Cursor's `~/.cursor/mcp.json`, Kimi Code's `$KIMI_CODE_HOME/mcp.json`, default `~/.kimi-code/mcp.json`, OpenCode's `$XDG_CONFIG_HOME/opencode/opencode.json`, default `~/.config/opencode/opencode.json`) without requiring the participant CLI on `PATH`. Default selection and `--agent '*'` still discover installed host executables; they do not create MCP configuration on machines without its CLI. Other hosts require their native registration command. Registration does not establish participant readiness or authentication. OpenCode registration writes a local MCP entry with a command array and `enabled=true`, preserving unrelated config. OpenCode sets `OPENCODE=1` on inherited MCP processes, which Confer uses for host detection.
+Explicit selection of a file-based host edits its user MCP configuration without requiring its CLI on `PATH`.
+This applies to Cursor, Kimi Code, OpenCode, and all five additional hosts in the second table.
+Default selection and `--agent '*'` discover executables on `PATH`: `gemini`, `qwen`, `droid`, `qoder` or `qodercli`, and `kiro-cli` or `kiro` for the added CLI hosts.
+The six existing native-command hosts still require their CLI on `PATH`.
+File registration accepts JSON. Invalid JSON, comments, and malformed install targets fail without changing the file.
+Existing non-stdio `confer` entries are not replaced or removed. Existing stdio entry options and unrelated configuration remain intact.
+Registration does not establish participant readiness or authentication. Restart the host or reload its MCP configuration after installation.
+
+OpenCode registration writes a local MCP entry with a command array and `enabled=true`, preserving unrelated configuration.
+OpenCode sets `OPENCODE=1` on inherited MCP processes, which Confer uses for host detection.
+The added hosts need no seat exclusion because they have no seat adapter. They can supply their ID in `create_room.host_agent`.
+MCP installation does not change host detection or seat selection.
+Default Skill selection requires `gemini` on `PATH` for Google Gemini CLI, matching MCP discovery.
+The shared `~/.gemini` directory alone does not select Google Gemini CLI. Explicit `--agent gemini-cli` does not require its executable.
 
 ## Adapter contract
 
