@@ -27,6 +27,8 @@ while :; do sleep 1; done
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "mcp::delivery::safety_tests::observer_failure_with_uncertain_cleanup_blocks_next_dispatch", "--nocapture"])
             .env("CONFER_TEST_OBSERVER_CLEANUP", directory.path())
+            .env("HOME", directory.path())
+            .env("ANTHROPIC_API_KEY", "fixture-not-a-credential")
             .env("PATH", path)
             .output()
             .unwrap();
