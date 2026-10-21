@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::Write;
+use std::io::{Read, Seek, Write};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -94,17 +94,18 @@ impl StateStore {
         }
     }
 
-    pub(crate) fn seat_dispatch_uncertain(&self, room_id: &str, seat_id: &str) -> bool {
-        let Ok(lease) = self
+    pub(crate) fn uncertain_delivery_id(&self, room_id: &str, seat_id: &str) -> Option<String> {
+        let lease = self
             .seat_lease_path(room_id, seat_id)
-            .and_then(|path| Ok(File::open(path)?))
-        else {
-            return false;
-        };
-        let non_empty = || lease.metadata().is_ok_and(|meta| meta.len() > 0);
-        let uncertain = non_empty() && lease.try_lock_shared().is_ok() && non_empty();
-        let _ = lease.unlock();
-        uncertain
+            .ok()
+            .and_then(|path| File::open(path).ok())?;
+        lease.try_lock_shared().ok()?;
+        seat_dispatch_id(&lease).ok().flatten()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seat_dispatch_uncertain(&self, room_id: &str, seat_id: &str) -> bool {
+        self.uncertain_delivery_id(room_id, seat_id).is_some()
     }
 
     fn seat_lease_path(&self, room_id: &str, seat_id: &str) -> Result<PathBuf> {
@@ -171,9 +172,20 @@ impl StateStore {
 }
 
 pub(crate) fn mark_seat_dispatch(lease: &File, delivery_id: &str) -> Result<()> {
-    lease.set_len(0)?;
+    if seat_dispatch_id(lease)?.is_some() {
+        bail!(
+            "previous_delivery_uncertain: inspect native work and clear the uncertain delivery before dispatch"
+        );
+    }
     lease.write_all_at(delivery_id.as_bytes(), 0)?;
     Ok(())
+}
+
+pub(crate) fn seat_dispatch_id(mut lease: &File) -> Result<Option<String>> {
+    lease.rewind()?;
+    let mut id = String::new();
+    lease.read_to_string(&mut id)?;
+    Ok((!id.is_empty()).then_some(id))
 }
 
 pub(crate) fn write_json_atomic(path: &Path, value: &impl serde::Serialize) -> Result<()> {

@@ -13,9 +13,11 @@ use serde::Serialize;
 use tokio::sync::{Mutex, mpsc, watch};
 
 use super::ConferMcp;
-use super::api::{CancelDeliveryArgs, SendMessageArgs, WaitOutputArgs, timestamp};
+use super::api::{
+    CancelDeliveryArgs, ClearUncertainDeliveryArgs, SendMessageArgs, WaitOutputArgs, timestamp,
+};
 use crate::adapters::{self, Invocation};
-use crate::state::{StateStore, canonical_workspace, mark_seat_dispatch};
+use crate::state::{StateStore, canonical_workspace, mark_seat_dispatch, seat_dispatch_id};
 use crate::types::{AgentKind, RoomRecord, SeatRecord, SeatStatus};
 
 const DEFAULT_WAIT_MS: u64 = 120_000;
@@ -30,6 +32,7 @@ enum DeliveryStatus {
     Completed,
     Failed,
     Cancelled,
+    AwaitingAnswer,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -45,6 +48,10 @@ struct DeliveryState {
     resume_command: Option<String>,
     answer_incomplete: bool,
     previous_delivery_uncertain: bool,
+    question: Option<serde_json::Value>,
+    uncertain_delivery_id: Option<String>,
+    #[serde(skip)]
+    cancel_requested: bool,
     #[serde(skip)]
     cancellation: adapters::Cancellation,
 }
@@ -53,7 +60,10 @@ impl DeliveryState {
     fn terminal(&self) -> bool {
         matches!(
             self.status,
-            DeliveryStatus::Completed | DeliveryStatus::Failed | DeliveryStatus::Cancelled
+            DeliveryStatus::Completed
+                | DeliveryStatus::Failed
+                | DeliveryStatus::Cancelled
+                | DeliveryStatus::AwaitingAnswer
         )
     }
 }
@@ -70,6 +80,8 @@ struct SendReceipt {
     agent: AgentKind,
     accepted: bool,
     previous_delivery_uncertain: bool,
+    uncertain_delivery_id: Option<String>,
+    resume_command: Option<String>,
     error: Option<String>,
 }
 
@@ -158,6 +170,7 @@ impl DeliveryTracker {
     fn cancel(&self, delivery_id: &str) {
         self.update(delivery_id, |delivery| {
             if !delivery.terminal() {
+                delivery.cancel_requested = true;
                 delivery.cancellation.cancel();
                 if delivery.status == DeliveryStatus::Queued {
                     delivery.status = DeliveryStatus::Cancelled;
@@ -186,13 +199,23 @@ impl DeliveryTracker {
         delivery_id: &str,
         mismatch: Option<String>,
         persistence_error: Option<String>,
-        output_error: Option<String>,
-        answer: Option<String>,
+        output: adapters::AdapterOutput,
         resume_command: Option<String>,
     ) {
         self.update(delivery_id, |delivery| {
             delivery.resume_command = resume_command;
-            finish_delivery(delivery, mismatch, persistence_error, output_error, answer);
+            finish_delivery(
+                delivery,
+                mismatch,
+                persistence_error,
+                output.error,
+                output.answer,
+            );
+            delivery.question = output.question;
+            if delivery.question.is_some() && delivery.error.is_none() && !delivery.cancel_requested
+            {
+                delivery.status = DeliveryStatus::AwaitingAnswer;
+            }
         });
     }
 
@@ -263,6 +286,34 @@ impl DeliveryRuntime {
 }
 
 impl ConferMcp {
+    pub(super) fn clear_uncertain_delivery_inner(
+        &self,
+        args: ClearUncertainDeliveryArgs,
+    ) -> Result<super::api::RoomOutput> {
+        let workspace = canonical_workspace(&args.workspace)?;
+        let room = self.store.room_for_workspace(&args.room_id, &workspace)?;
+        let seat = room
+            .seats
+            .iter()
+            .find(|seat| seat.id == args.seat || seat.name == args.seat)
+            .with_context(|| format!("unknown seat '{}' in room '{}'", args.seat, room.id))?;
+        let lease = self.store.try_acquire_seat_lease(&room.id, &seat.id)?;
+        if let Some(id) = seat_dispatch_id(&lease)? {
+            if id != args.delivery_id {
+                bail!(
+                    "uncertain delivery changed for seat '{}' in room '{}'. Inspect native work again before clearing it",
+                    seat.name,
+                    room.id
+                );
+            }
+            lease.set_len(0)?;
+        }
+        drop(lease);
+        Ok(super::api::RoomOutput {
+            room: super::api::room_view(&room, &self.store),
+        })
+    }
+
     pub(super) async fn send_message_inner(
         &self,
         args: SendMessageArgs,
@@ -295,7 +346,19 @@ impl ConferMcp {
                 .reason
                 .unwrap_or_else(|| "agent is not locally ready".into())
         });
-        let previous_delivery_uncertain = self.store.seat_dispatch_uncertain(&room.id, &seat.id);
+        let uncertain_delivery_id = self.store.uncertain_delivery_id(&room.id, &seat.id);
+        let previous_delivery_uncertain = uncertain_delivery_id.is_some();
+        let resume_command = seat
+            .native_session_id
+            .as_deref()
+            .and_then(|id| adapters::resume_command(seat.agent, &room.workspace, id));
+        if previous_delivery_uncertain {
+            error = Some(uncertain_delivery_error(
+                room,
+                seat,
+                resume_command.as_deref(),
+            ));
+        }
         let delivery_id = uuid::Uuid::new_v4().to_string();
         let cancellation = adapters::Cancellation::default();
         self.runtime.deliveries.insert(DeliveryState {
@@ -311,9 +374,12 @@ impl ConferMcp {
             },
             final_answer: None,
             error: error.clone(),
-            resume_command: None,
+            resume_command: resume_command.clone(),
             answer_incomplete: false,
-            previous_delivery_uncertain: false,
+            previous_delivery_uncertain,
+            question: None,
+            uncertain_delivery_id: uncertain_delivery_id.clone(),
+            cancel_requested: false,
             cancellation: cancellation.clone(),
         });
         if error.is_none() {
@@ -341,6 +407,8 @@ impl ConferMcp {
             agent: seat.agent,
             accepted: error.is_none(),
             previous_delivery_uncertain,
+            uncertain_delivery_id,
+            resume_command,
             error,
         }
     }
@@ -397,6 +465,7 @@ impl ConferMcp {
                     self.runtime.deliveries.update(&id, |state| {
                         if !state.terminal() {
                             state.previous_delivery_uncertain = true;
+                            state.uncertain_delivery_id = Some(id.clone());
                             state.cancellation.mark_uncertain();
                             state.error = Some("cancellation cleanup did not finish within 8s; native work is uncertain".into());
                         }
@@ -449,6 +518,20 @@ impl ConferMcp {
             }
         }
     }
+}
+
+fn uncertain_delivery_error(
+    room: &RoomRecord,
+    seat: &SeatRecord,
+    resume_command: Option<&str>,
+) -> String {
+    format!(
+        "previous_delivery_uncertain: room '{}', seat '{}' ({}). Inspect native work, then call clear_uncertain_delivery with the uncertain delivery ID. Resume command: {}",
+        room.id,
+        seat.name,
+        seat.agent.id(),
+        resume_command.unwrap_or("unavailable. Inspect the native agent store")
+    )
 }
 
 fn seat_key(room_id: &str, seat_id: &str) -> String {
@@ -524,3 +607,12 @@ fn finish_delivery(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, unix))]
+mod safety_tests;
+
+#[cfg(all(test, unix))]
+mod question_tests;
+
+#[cfg(all(test, unix))]
+mod runtime_tests;

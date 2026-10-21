@@ -100,6 +100,7 @@ mod tests {
             message: "Analyze this".into(),
             first_message: true,
             cancellation: Default::default(),
+            session_observer: Default::default(),
         };
         let mut command = invocation.command();
         apply_native_args(&invocation, &mut command).unwrap();

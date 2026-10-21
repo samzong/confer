@@ -28,6 +28,36 @@ pub(super) async fn run_seat_worker(
         let Some(lease) = session_guard else {
             continue;
         };
+        match seat_dispatch_id(&lease) {
+            Ok(None) => {}
+            result => {
+                let detail = match result {
+                    Ok(Some(id)) => store
+                        .room_for_workspace(&queued.room_id, &queued.workspace)
+                        .and_then(|room| {
+                            let seat = room
+                                .seats
+                                .iter()
+                                .find(|seat| seat.id == queued.seat_id)
+                                .context("seat disappeared")?;
+                            let resume = seat.native_session_id.as_deref().and_then(|id| {
+                                adapters::resume_command(seat.agent, &room.workspace, id)
+                            });
+                            deliveries.update(&queued.delivery_id, |delivery| {
+                                delivery.previous_delivery_uncertain = true;
+                                delivery.uncertain_delivery_id = Some(id.clone());
+                                delivery.resume_command = resume.clone();
+                            });
+                            Ok(uncertain_delivery_error(&room, seat, resume.as_deref()))
+                        })
+                        .unwrap_or_else(|error| error.to_string()),
+                    Err(error) => format!("failed to inspect prior delivery: {error}"),
+                    Ok(None) => unreachable!(),
+                };
+                deliveries.set_failed(&queued.delivery_id, detail);
+                continue;
+            }
+        }
         let result = match mark_seat_dispatch(&lease, &queued.delivery_id) {
             Ok(()) => {
                 process_queued_delivery(&queued, &store, &deliveries, activity.as_ref()).await
@@ -50,11 +80,12 @@ pub(super) async fn run_seat_worker(
             .get(&queued.delivery_id)
             .is_some_and(|delivery| delivery.status == DeliveryStatus::Running);
         let preserve_uncertainty = dispatched
-            && queued.cancellation.is_cancelled()
-            && (preserve_uncertainty || queued.cancellation.is_uncertain());
+            && (queued.cancellation.is_uncertain()
+                || (queued.cancellation.is_cancelled() && preserve_uncertainty));
         if preserve_uncertainty {
             deliveries.update(&queued.delivery_id, |delivery| {
                 delivery.previous_delivery_uncertain = true;
+                delivery.uncertain_delivery_id = Some(queued.delivery_id.clone());
             });
         }
         if !preserve_uncertainty {
@@ -66,8 +97,7 @@ pub(super) async fn run_seat_worker(
                 &queued.delivery_id,
                 completion.mismatch,
                 completion.persistence_error,
-                completion.output.error,
-                completion.output.answer,
+                completion.output,
                 completion.resume_command,
             ),
             Err(error) => deliveries.set_failed(&queued.delivery_id, format!("{error:#}")),
@@ -112,6 +142,22 @@ async fn process_queued_delivery(
     } else {
         seat.native_session_id.clone()
     };
+    let observer_store = store.clone();
+    let observer_room = room.clone();
+    let observer_seat = seat.clone();
+    let expected = reserved.clone();
+    let session_observer = adapters::SessionObserver::new(move |id| {
+        let (mismatch, persistable) = native_session_outcome(expected.as_deref(), Some(id));
+        if let Some(error) = mismatch {
+            bail!(error);
+        }
+        persist_native_session(
+            &observer_store,
+            &observer_room.id,
+            &observer_seat.id,
+            persistable,
+        )
+    });
     let invocation = Invocation {
         agent: seat.agent,
         executable,
@@ -123,6 +169,7 @@ async fn process_queued_delivery(
         message: queued.message.clone(),
         first_message,
         cancellation: queued.cancellation.clone(),
+        session_observer,
     };
     let mut output = adapters::run(invocation).await;
     if queued.cancellation.is_cancelled()

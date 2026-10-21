@@ -5,8 +5,7 @@ use anyhow::{Context, Result, bail};
 use super::ConferMcp;
 use super::api::{
     AddSeatArgs, AddSeatOutput, CreateRoomArgs, CreateRoomOutput, ListRoomsArgs, ListRoomsOutput,
-    RetireSeatArgs, RetireSeatOutput, RoomScope, SeatSpecInput, room_view, rooms_for_scope,
-    timestamp,
+    RetireSeatArgs, RoomOutput, RoomScope, SeatSpecInput, room_view, rooms_for_scope, timestamp,
 };
 use crate::adapters;
 use crate::state::{canonical_workspace, normalize_workspace};
@@ -91,7 +90,7 @@ impl ConferMcp {
         })
     }
 
-    pub(super) async fn retire_seat_inner(&self, args: RetireSeatArgs) -> Result<RetireSeatOutput> {
+    pub(super) async fn retire_seat_inner(&self, args: RetireSeatArgs) -> Result<RoomOutput> {
         let workspace = canonical_workspace(&args.workspace)?;
         let workspace_text = workspace.to_string_lossy().into_owned();
         let room = self.store.room_for_workspace(&args.room_id, &workspace)?;
@@ -126,7 +125,7 @@ impl ConferMcp {
             Ok(room.clone())
         })?;
         self.runtime.stop_seat(&room.id, &seat_id).await;
-        Ok(RetireSeatOutput {
+        Ok(RoomOutput {
             room: room_view(&room, &self.store),
         })
     }

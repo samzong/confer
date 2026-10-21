@@ -54,7 +54,19 @@ pub(super) async fn run(invocation: Invocation, prompt: &str) -> AdapterOutput {
         match next {
             Ok(Some(line)) => match serde_json::from_str::<Value>(&line) {
                 Ok(value) => {
+                    let previous_session = captured.session.clone();
                     captured.ingest(&value);
+                    if captured.session != previous_session
+                        && let Some(id) = captured.session.as_deref()
+                        && let Err(error) = invocation.session_observer.observe(id)
+                    {
+                        captured.error = Some(error.to_string());
+                        if super::process::terminate(&mut child).await.is_err() {
+                            invocation.cancellation.mark_uncertain();
+                        }
+                        terminated = true;
+                        break;
+                    }
                     if captured.error.is_none()
                         && captured.answer.is_some()
                         && is_final_result(&value)
