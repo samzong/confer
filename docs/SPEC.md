@@ -117,7 +117,11 @@ If an explicitly requested agent is unavailable, creation or seat addition fails
 
 The first queued message to an external seat creates its native session and records the native session ID. Every seat has one in-process FIFO worker. A sent message enters that worker, starts promptly when the seat is idle, and remains `queued` while an earlier delivery runs. Different seats may run concurrently. A cross-process file lease serializes workers from separate MCP processes, but FIFO ordering is guaranteed only within one live MCP process. Queue processing does not retry a native message after dispatch may have begun.
 
-Delivery tracking, pending Queue messages, and workers exist only in the live MCP process. If that process exits, queued messages that have not started are lost, unfinished outputs and delivery IDs are lost, its lease is released, and native work may have continued. Persisted seat metadata keeps native session addressing, but not pending messages. A seat whose lease file is non-empty while no process holds the lease reports `previous_delivery_uncertain: true`: its last delivery ended without Confer observing a result, so native work may have changed files or may still be running. The seat's next delivery overwrites the marker, so the flag reads false once that delivery starts even though the earlier native work may still be running. The caller must verify uncertain native work before sending that seat another message. If Confer never observed a native session ID, the next send can create a new native session. It still reports the uncertainty flag before dispatch. Confer never automatically redelivers an uncertain message because the first execution may have changed code.
+Delivery tracking, queued messages, and results live only in the MCP process and are lost when it exits. Native work can continue. Adapters save a native session ID as soon as they observe it, through the existing room cache. CLI adapters observe IDs in output. Devin observes its ID in the ATIF export. Replies remain outside Confer state.
+
+A non-empty, unlocked seat lease marks `previous_delivery_uncertain: true`. Confer refuses sends to that seat. It checks again under the lease before dispatch, including for already queued messages. Refusals include `uncertain_delivery_id` and `resume_command`. The command is null for Cursor or an unknown session ID.
+
+Inspect native work, then call `clear_uncertain_delivery` with that ID. Clearing neither dispatches nor retries a message. A later explicit send resumes the recorded session or creates one if no ID exists. Confer never automatically redelivers uncertain work. Removing the room cache resets discovery without deleting native sessions.
 
 ## Message visibility
 
@@ -125,7 +129,7 @@ Each seat has a private native session, sees only addressed messages, and return
 
 ## MCP tools
 
-The public MCP surface contains seven tools. Workspace-scoped calls require an explicit `workspace`; `list_rooms` with `scope: all` is the only exception. Callers must update their arguments and bundled Skill together, restart the MCP connection, and refresh its tool schemas. Older callers that counted the host in target_size must now pass the desired execution seat count. Creation without target_size or explicit seats is rejected, and create_room and add_seat no longer return replacements. The room cache format is unchanged, and existing rooms are not automatically moved to another workspace.
+The public MCP surface contains eight tools. Calls require the verified `workspace`, except `list_rooms` with `scope: all`. Update callers and the bundled Skill together, restart MCP connections, and refresh schemas after upgrading. `target_size` excludes the host. Creation requires a target size or explicit seats. Unavailable choices fail without replacement. The room cache format and existing room workspaces are unchanged.
 
 ### `create_room`
 
@@ -153,7 +157,7 @@ Retires one seat by name or ID using `room_id`, `seat`, and the host-verified wo
 
 Lists rooms. `scope` defaults to `current`, which requires the host task's absolute directory in `workspace` and normalizes it like creation. `all` returns metadata for every recorded workspace without requiring a workspace or inspecting the MCP process working directory. The bundled Skill uses this when the user explicitly asks to recover an earlier room; other callers decide their own discovery workflow. Discovery does not authorize operating on rooms outside the host task's workspace.
 
-Output includes room ID, name, participants, native-session availability, each seat's resume command and `previous_delivery_uncertain` flag, and timestamps. It never returns message content.
+Output includes room ID, name, participants, native-session availability, and timestamps. Each seat includes `resume_command`, `previous_delivery_uncertain`, and `uncertain_delivery_id`. It never returns message content.
 
 ### `send_message`
 
@@ -166,7 +170,11 @@ Input:
 - `recipients`: one or more seat names or IDs, or `*` for broadcast;
 - `message`.
 
-The send returns one receipt and new `delivery_id` per recipient plus immediate acceptance or readiness errors. Each receipt includes the seat's `previous_delivery_uncertain` flag observed before queueing. The receipt does not include delivery status; the caller uses `wait_output` to observe `queued`, `running`, `completed`, `failed`, or `cancelled` state.
+Each recipient gets a receipt and `delivery_id` for `wait_output`. Receipts include `accepted`, `error`, `previous_delivery_uncertain`, `uncertain_delivery_id`, and `resume_command`. An uncertain seat returns `accepted: false` without queueing. Use `wait_output` for delivery status.
+
+### `clear_uncertain_delivery`
+
+After inspecting native work, supply `room_id`, verified `workspace`, seat name or ID in `seat`, and the observed `uncertain_delivery_id` in `delivery_id`. A busy seat returns `seat_busy`. A changed marker fails without clearing it. An empty marker is already clear. Output contains room metadata. This action sends no message.
 
 ### `cancel_delivery`
 
@@ -180,13 +188,15 @@ Each adapter starts in a separate process group on Unix. Forced termination kill
 
 After forced termination, Confer waits up to three seconds for the child to exit. The tool waits up to eight seconds for adapter cleanup and session persistence. If cleanup exceeds that limit, it returns `timed_out: true` and `previous_delivery_uncertain: true` for unfinished deliveries. Those deliveries remain `running` until cleanup finishes. Confer releases the seat lease before it returns `cancelled`. If process termination or reaping fails, the result reports `previous_delivery_uncertain: true`. This flag means native work is not confirmed stopped, even when the delivery is `cancelled`. A partial answer, when available, has `answer_incomplete: true`. An adapter or persistence error remains available in `error`. Finished deliveries keep their current status and output. Confer marks an answer complete at ACP `end_turn`, Codex `turn/completed`, or a final CLI result. Later cancellation during close, unsubscribe, or process reaping cannot change that answer to `cancelled` or incomplete. Unknown IDs use the same unknown or expired delivery error as `wait_output`.
 
-Cancellation does not retire the seat. Other deliveries queued before cancellation still run in FIFO order, even when cancellation reports uncertainty. To inspect uncertain work first, cancel those queued deliveries before checking it. The uncertainty flag clears when the next delivery starts processing on that seat, even if readiness or seat validation fails before dispatch. Later deliveries resume the recorded native session. If Confer did not observe a native session ID, the cancellation result reports `previous_delivery_uncertain: true` and explains that no native session was established. If no delivery starts processing first, the next send receipt retains the uncertainty flag and permits a new native session, as after MCP crash recovery. If Confer observed a native session ID, later deliveries resume that session. Cancellation does not undo file changes or other side effects.
+Cancellation does not retire the seat or undo side effects. Queued deliveries proceed only if cleanup leaves no uncertain marker. Otherwise, they fail before dispatch. Inspect native work, then clear the marker before sending again. Later sends resume the recorded session. If no ID was observed, the cancellation result explains that the next explicit send creates a new native session.
 
 ### `wait_output`
 
 Waits for specified deliveries or the room’s current live deliveries. Requires `room_id` and the host-verified workspace root in `workspace`. `timeout_ms` defaults to `120000`, accepts `0` for an immediate snapshot, and is capped at `600000`.
 
-Output contains each delivery’s `queued`, `running`, `completed`, `failed`, or `cancelled` status, final assistant answer, and error. A finished delivery whose seat has a native session includes `resume_command`: a shell command that enters the workspace and opens that session in the agent's own interactive CLI, so the user can continue the work directly. Cursor ACP sessions are stored separately from Cursor CLI chats and return no command. Resuming while the seat still has queued or running deliveries lets two processes write the same native session. It does not expose thinking, token deltas, or intermediate tool events. A timeout returns completed results and current non-terminal statuses without cancelling them. A `cancelled` delivery is terminal. Its partial answer, when present, has `answer_incomplete: true`.
+Output includes delivery status, final answer, error, and `resume_command`. Status is `queued`, `running`, `completed`, `failed`, `cancelled`, or `awaiting_answer`. A resume command enters the workspace and opens the native session interactively. Cursor ACP sessions are separate from CLI chats and return no command. Do not resume while that seat has queued or running deliveries: two processes can write the same session. Thinking, token deltas, and intermediate tool events are excluded. A timeout returns current results without cancellation. `cancelled` is terminal. `answer_incomplete: true` marks a partial answer.
+
+For a Codex or Cursor question, Confer stops the native turn through native cancellation and returns the question in `question`. After a clean question-triggered stop, `awaiting_answer` is terminal; `completed` is true. Caller cancellation stays `cancelled`. The host must supply an answer as a new message to the same seat. No native question request remains open. Confer neither fabricates an answer nor skips the question. Failed cleanup preserves the question and error and can leave uncertainty. Questions are lost on MCP exit.
 
 ## CLI surface
 
@@ -267,4 +277,4 @@ Tool errors must identify the room, seat, agent, and failing operation when thos
 - empty `delivery_ids` for `cancel_delivery`;
 - timeout with partial results.
 
-Confer must not reinterpret a failed send as success, silently create a replacement session for a stale native session, or retry a message that may have executed.
+Confer must not reinterpret a failed send as success or silently replace a stale native session. It refuses dispatch while an uncertain marker exists and never automatically retries a message that could have executed. The caller must inspect native work before clearing uncertainty.

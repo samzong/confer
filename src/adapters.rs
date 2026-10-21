@@ -40,6 +40,7 @@ pub(crate) struct Invocation {
     pub(crate) message: String,
     pub(crate) first_message: bool,
     pub(crate) cancellation: Cancellation,
+    pub(crate) session_observer: SessionObserver,
 }
 
 impl Invocation {
@@ -53,11 +54,38 @@ impl Invocation {
     }
 }
 
+type SessionCallback = dyn Fn(&str) -> anyhow::Result<()> + Send + Sync;
+
+#[derive(Clone, Default)]
+pub(crate) struct SessionObserver(Option<std::sync::Arc<SessionCallback>>);
+
+impl std::fmt::Debug for SessionObserver {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SessionObserver")
+    }
+}
+
+impl SessionObserver {
+    pub(crate) fn new(
+        callback: impl Fn(&str) -> anyhow::Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        Self(Some(std::sync::Arc::new(callback)))
+    }
+
+    pub(crate) fn observe(&self, session_id: &str) -> anyhow::Result<()> {
+        if let Some(callback) = &self.0 {
+            callback(session_id)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct AdapterOutput {
     pub(crate) observed_session_id: Option<String>,
     pub(crate) answer: Option<String>,
     pub(crate) error: Option<String>,
+    pub(crate) question: Option<serde_json::Value>,
 }
 
 pub(crate) fn reserve_session(agent: AgentKind) -> Option<String> {
@@ -136,6 +164,7 @@ impl AdapterOutput {
             observed_session_id,
             answer,
             error,
+            question: None,
         }
     }
 }
@@ -154,3 +183,6 @@ fn prompt_text(invocation: &Invocation) -> String {
         .collect::<Vec<_>>()
         .join("\n\n")
 }
+
+#[cfg(all(test, unix))]
+mod session_tests;

@@ -221,7 +221,7 @@ fn seat_lease_is_exclusive_across_store_instances() {
 }
 
 #[test]
-fn unreleased_dispatch_marks_seat_uncertain_until_the_next_delivery_finishes() {
+fn unreleased_dispatch_cannot_be_overwritten_without_clear() {
     let dir = tempfile::tempdir().unwrap();
     let store = StateStore::new(dir.path().join("rooms.json"));
     assert!(!store.seat_dispatch_uncertain("room-1", "seat-1"));
@@ -233,6 +233,12 @@ fn unreleased_dispatch_marks_seat_uncertain_until_the_next_delivery_finishes() {
     assert!(store.seat_dispatch_uncertain("room-1", "seat-1"));
 
     let next = store.try_acquire_seat_lease("room-1", "seat-1").unwrap();
+    assert!(mark_seat_dispatch(&next, "delivery-2").is_err());
+    assert_eq!(
+        super::seat_dispatch_id(&next).unwrap().as_deref(),
+        Some("delivery-1")
+    );
+    next.set_len(0).unwrap();
     mark_seat_dispatch(&next, "delivery-2").unwrap();
     next.set_len(0).unwrap();
     next.unlock().unwrap();

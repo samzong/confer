@@ -129,7 +129,7 @@ async fn serve(channel: Channel, invocation: Invocation) -> Result<(), Error> {
                     AgentKind::Devin => devin::run(invocation, &prompt).await,
                     _ => cli::run(invocation, &prompt).await,
                 };
-                let meta = json!({"confer.nativeSessionId": output.observed_session_id});
+                let meta = json!({"confer.nativeSessionId": output.observed_session_id, "confer.question": output.question});
                 if let Some(error) = output.error {
                     return responder.respond_with_error(Error::new(-32000, error).data(meta));
                 }

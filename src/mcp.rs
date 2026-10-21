@@ -11,8 +11,8 @@ use rmcp::{ServerHandler, ServiceExt, tool, tool_handler, tool_router, transport
 use serde::Serialize;
 
 use self::api::{
-    AddSeatArgs, CancelDeliveryArgs, CreateRoomArgs, ListRoomsArgs, RetireSeatArgs,
-    SendMessageArgs, WaitOutputArgs, json_result,
+    AddSeatArgs, CancelDeliveryArgs, ClearUncertainDeliveryArgs, CreateRoomArgs, ListRoomsArgs,
+    RetireSeatArgs, SendMessageArgs, WaitOutputArgs, json_result,
 };
 use self::delivery::DeliveryRuntime;
 use crate::state::StateStore;
@@ -143,7 +143,7 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "Queue one message for one or more external seats in a room. Pass the normalized workspace root already verified against your actual current task when creating or recovering the room. A different workspace is rejected; never substitute another room's workspace to bypass a mismatch. Use recipient '*' to broadcast. Idle seats start promptly and busy seats run messages FIFO. Every recipient gets a delivery ID for wait_output. Receipts carry the same previous_delivery_uncertain flag as list_rooms. Other deliveries queued before cancellation still run in FIFO order, even when cancellation reports uncertainty. To inspect uncertain work first, cancel those queued deliveries before checking it. The uncertainty flag clears when the next delivery starts processing on that seat, even if readiness or seat validation fails before dispatch.",
+        description = "Queue one message for one or more external seats in a room. Pass the normalized workspace root already verified against your actual current task when creating or recovering the room. A different workspace is rejected; never substitute another room's workspace to bypass a mismatch. Use recipient '*' to broadcast. Idle seats start promptly and busy seats run messages FIFO. Every recipient gets a delivery ID for wait_output. Uncertain seats refuse dispatch. Receipts include previous_delivery_uncertain, uncertain_delivery_id, and resume_command. Inspect native work, then call clear_uncertain_delivery with that ID. The worker also blocks queued messages if uncertainty arises before dispatch.",
         annotations(
             title = "Send message",
             read_only_hint = false,
@@ -159,7 +159,23 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "Cancel specific live deliveries in a room. Pass the verified normalized workspace root and a nonempty delivery_ids list. Requested queued deliveries never start. A cancelled result only confirms that the process tree Confer can track stopped. Detached or reparented processes, such as background daemons or development servers, can continue running. The host must inspect these processes separately. A result with previous_delivery_uncertain set to true does not confirm that native work stopped. Cleanup can time out after eight seconds and return timed_out=true, leaving running deliveries marked previous_delivery_uncertain. Other deliveries queued before cancellation still run in FIFO order, even when cancellation reports uncertainty. To inspect uncertain work first, cancel those queued deliveries before checking it. The uncertainty flag clears when the next delivery starts processing on that seat, even if readiness or seat validation fails before dispatch. Later deliveries resume an observed native session ID. If no ID was observed, cancellation reports that no native session was established. The next delivery can create a new native session. If no delivery starts processing first, the next send receipt reports previous_delivery_uncertain. Finished deliveries keep their current status. Partial answers have answer_incomplete set to true. Cancellation does not undo file changes or other side effects. Delivery IDs belong to the current MCP process, as with wait_output.",
+        description = "Clear one uncertain delivery after the caller inspects native work. Pass the verified workspace, room_id, seat name or ID, and the uncertain_delivery_id as delivery_id. A running seat or changed marker is rejected. This action sends no message and never retries native work.",
+        annotations(
+            title = "Clear uncertain delivery",
+            read_only_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn clear_uncertain_delivery(
+        &self,
+        Parameters(args): Parameters<ClearUncertainDeliveryArgs>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        Ok(json_result(self.clear_uncertain_delivery_inner(args)))
+    }
+
+    #[tool(
+        description = "Cancel specific live deliveries in a room. Pass the verified normalized workspace root and a nonempty delivery_ids list. Requested queued deliveries never start. A cancelled result only confirms that the process tree Confer can track stopped. Detached or reparented processes, such as background daemons or development servers, can continue running. The host must inspect these processes separately. A result with previous_delivery_uncertain set to true does not confirm that native work stopped. Cleanup can time out after eight seconds and return timed_out=true, leaving running deliveries marked previous_delivery_uncertain. If cleanup leaves an uncertain marker, queued messages fail before dispatch. Inspect native work, then call clear_uncertain_delivery with the uncertain delivery ID before sending again. Later deliveries resume an observed native session ID. If no ID was observed, cancellation reports that no native session was established. The next delivery can create a new native session. The next send refuses dispatch until uncertainty is cleared. Finished deliveries keep their current status. Partial answers have answer_incomplete set to true. Cancellation does not undo file changes or other side effects. Delivery IDs belong to the current MCP process, as with wait_output.",
         annotations(
             title = "Cancel delivery",
             read_only_hint = false,
@@ -175,7 +191,7 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "Wait for final answers from live deliveries. Pass the normalized workspace root already verified against your actual current task when creating or recovering the room. A different workspace is rejected; never substitute another room's workspace to bypass a mismatch. Pass delivery IDs to wait for specific sends, or omit them to wait for every delivery from this room still known to the current MCP process. A timeout returns completed answers plus queued and running statuses without cancellation. Cancelled deliveries are terminal. An answer with answer_incomplete set to true is partial. Thinking, token deltas, and tool events are never returned.",
+        description = "Wait for final answers from live deliveries. Pass the normalized workspace root already verified against your actual current task when creating or recovering the room. A different workspace is rejected; never substitute another room's workspace to bypass a mismatch. Pass delivery IDs to wait for specific sends, or omit them to wait for every delivery from this room still known to the current MCP process. A timeout returns completed answers plus queued and running statuses without cancellation. Cancelled and awaiting_answer deliveries are terminal. A Codex or Cursor question stops the native turn and returns question with awaiting_answer after a clean stop, unless the caller cancelled the delivery. Send the answer to the same seat as a new turn. Failed cleanup keeps the question and error. An answer with answer_incomplete set to true is partial. Thinking, token deltas, and tool events are never returned.",
         annotations(
             title = "Wait for output",
             read_only_hint = true,
@@ -237,7 +253,7 @@ mod tests {
     use super::capabilities;
 
     #[test]
-    fn capabilities_expose_the_seven_room_tools() {
+    fn capabilities_expose_the_eight_room_tools() {
         let mut names = capabilities()
             .unwrap()
             .tools
@@ -251,6 +267,7 @@ mod tests {
             [
                 "add_seat",
                 "cancel_delivery",
+                "clear_uncertain_delivery",
                 "create_room",
                 "list_rooms",
                 "retire_seat",

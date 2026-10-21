@@ -10,6 +10,9 @@ struct Connection {
     output: Lines<BufReader<ChildStdout>>,
     next_id: u64,
     events: Vec<Value>,
+    question: Option<Value>,
+    cancellation: super::Cancellation,
+    thread: Option<String>,
 }
 
 impl Connection {
@@ -71,7 +74,17 @@ impl Connection {
             "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
                 json!({"id":request["id"],"result":{"decision":"accept"}})
             }
-            "item/tool/requestUserInput" => json!({"id":request["id"],"result":{"answers":{}}}),
+            "item/tool/requestUserInput" => {
+                if request["params"]["threadId"].as_str() != self.thread.as_deref()
+                    || self.thread.is_none()
+                {
+                    bail!("Codex question targets a different native thread");
+                }
+                self.question = Some(request["params"].clone());
+                self.cancellation.cancel();
+                self.next_id += 1;
+                return self.write(json!({"id":self.next_id,"method":"turn/interrupt","params":{"threadId":request["params"]["threadId"],"turnId":request["params"]["turnId"]}})).await;
+            }
             _ => {
                 json!({"id":request["id"],"error":{"code":-32601,"message":"unsupported non-interactive request"}})
             }
@@ -121,6 +134,8 @@ impl Connection {
             .context("Codex returned no native thread ID")?
             .to_owned();
         *binding = Some(thread.clone());
+        self.thread = Some(thread.clone());
+        invocation.session_observer.observe(&thread)?;
         if !invocation.first_message && invocation.native_session_id.as_deref() != Some(&thread) {
             bail!("Codex resumed a different native thread");
         }
@@ -154,8 +169,10 @@ impl Connection {
                     _ = invocation.cancellation.cancelled(), if !interrupted => {
                         interrupted = true;
                         super::process::stop_cancelled_descendants(&invocation.cancellation).await;
-                        self.next_id += 1;
-                        self.write(json!({"id":self.next_id,"method":"turn/interrupt","params":{"threadId":thread,"turnId":turn}})).await?;
+                        if self.question.is_none() {
+                            self.next_id += 1;
+                            self.write(json!({"id":self.next_id,"method":"turn/interrupt","params":{"threadId":thread,"turnId":turn}})).await?;
+                        }
                         continue;
                     }
                 },
@@ -176,7 +193,9 @@ impl Connection {
                     answer = final_message(item).or(answer);
                 }
                 Some("turn/completed") if params["turn"]["id"].as_str() == Some(&turn) => {
-                    if params["turn"]["status"] != "completed" {
+                    if params["turn"]["status"] != "completed"
+                        && !(self.question.is_some() && params["turn"]["status"] == "interrupted")
+                    {
                         bail!(
                             "Codex turn {}: {}",
                             params["turn"]["status"],
@@ -199,6 +218,9 @@ impl Connection {
                     )
                     .await
                     .context("Codex unsubscribe timed out")??;
+                    if self.question.is_some() {
+                        return Ok(answer.unwrap_or_default());
+                    }
                     return answer
                         .filter(|s| !s.is_empty())
                         .context("Codex returned no final answer");
@@ -221,6 +243,9 @@ pub(super) async fn run(invocation: Invocation, prompt: &str) -> AdapterOutput {
         output: BufReader::new(child.stdout.take().expect("piped stdout")).lines(),
         next_id: 0,
         events: Vec::new(),
+        question: None,
+        cancellation: invocation.cancellation.clone(),
+        thread: None,
     };
     let mut observed_session_id = None;
     let result = tokio::select! {
@@ -230,6 +255,7 @@ pub(super) async fn run(invocation: Invocation, prompt: &str) -> AdapterOutput {
     if invocation.cancellation.is_cancelled() {
         super::process::stop_cancelled_descendants(&invocation.cancellation).await;
     }
+    let question = connection.question.take();
     drop(connection);
     let status = super::process::reap_with_cancellation(&mut child, &invocation.cancellation).await;
     let stderr = stderr.finish().await;
@@ -240,10 +266,13 @@ pub(super) async fn run(invocation: Invocation, prompt: &str) -> AdapterOutput {
         Ok(Some(status)) => result.and_then(|_| Err(anyhow::anyhow!("codex exited with {status}"))),
         Err(error) => result.and_then(|_| Err(error.into())),
     };
-    AdapterOutput::from_result(
+    let mut output = AdapterOutput::from_result(
         observed_session_id,
         result.map_err(|error| error_text(&error.to_string(), &stderr, "")),
-    )
+    );
+    output.answer = output.answer.filter(|answer| !answer.is_empty());
+    output.question = question;
+    output
 }
 
 fn final_message(item: &Value) -> Option<String> {

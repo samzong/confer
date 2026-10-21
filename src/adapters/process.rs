@@ -5,7 +5,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 
 #[cfg(unix)]
-fn kill_target(id: i32) -> std::io::Result<()> {
+async fn kill_target(id: i32) -> std::io::Result<()> {
     unsafe extern "C" {
         fn kill(pid: std::os::raw::c_int, signal: std::os::raw::c_int) -> std::os::raw::c_int;
     }
@@ -14,6 +14,21 @@ fn kill_target(id: i32) -> std::io::Result<()> {
     }
     let error = std::io::Error::last_os_error();
     if error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(3) {
+        return Ok(());
+    }
+    if error.kind() == std::io::ErrorKind::PermissionDenied
+        && process_table()
+            .await?
+            .iter()
+            .filter(|row| {
+                if id > 0 {
+                    row.id == id
+                } else {
+                    row.group == -id
+                }
+            })
+            .all(|row| row.zombie)
+    {
         Ok(())
     } else {
         Err(error)
@@ -21,12 +36,19 @@ fn kill_target(id: i32) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
-async fn descendant_targets(root: u32, include_root: bool) -> std::io::Result<Vec<i32>> {
-    use std::collections::HashSet;
+struct ProcessRow {
+    id: i32,
+    parent: i32,
+    group: i32,
+    zombie: bool,
+}
+
+#[cfg(unix)]
+async fn process_table() -> std::io::Result<Vec<ProcessRow>> {
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(1),
         Command::new("/bin/ps")
-            .args(["-A", "-o", "pid=,ppid=,pgid="])
+            .args(["-A", "-o", "pid=,ppid=,pgid=,stat="])
             .kill_on_drop(true)
             .output(),
     )
@@ -40,23 +62,31 @@ async fn descendant_targets(root: u32, include_root: bool) -> std::io::Result<Ve
     if !output.status.success() {
         return Err(std::io::Error::other("process descendant scan failed"));
     }
-    let rows = String::from_utf8_lossy(&output.stdout)
+    String::from_utf8_lossy(&output.stdout)
         .lines()
-        .filter_map(|line| {
-            let values = line
-                .split_whitespace()
-                .map(str::parse::<i32>)
-                .collect::<Result<Vec<_>, _>>()
-                .ok()?;
-            (values.len() == 3).then(|| (values[0], values[1], values[2]))
+        .map(|line| {
+            let mut fields = line.split_whitespace();
+            Some(ProcessRow {
+                id: fields.next()?.parse().ok()?,
+                parent: fields.next()?.parse().ok()?,
+                group: fields.next()?.parse().ok()?,
+                zombie: fields.next()?.starts_with('Z'),
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| std::io::Error::other("invalid process table"))
+}
+
+#[cfg(unix)]
+async fn descendant_targets(root: u32, include_root: bool) -> std::io::Result<Vec<i32>> {
+    use std::collections::HashSet;
+    let rows = process_table().await?;
     let mut descendants = HashSet::from([root as i32]);
     loop {
         let before = descendants.len();
-        for &(pid, parent, _) in &rows {
-            if descendants.contains(&parent) {
-                descendants.insert(pid);
+        for row in &rows {
+            if descendants.contains(&row.parent) {
+                descendants.insert(row.id);
             }
         }
         if descendants.len() == before {
@@ -67,13 +97,15 @@ async fn descendant_targets(root: u32, include_root: bool) -> std::io::Result<Ve
     if include_root {
         targets.insert(-(root as i32));
     }
-    for (pid, _, group) in rows {
-        if pid != root as i32 && descendants.contains(&pid) {
-            targets.insert(if group != root as i32 && descendants.contains(&group) {
-                -group
-            } else {
-                pid
-            });
+    for row in rows {
+        if row.id != root as i32 && descendants.contains(&row.id) {
+            targets.insert(
+                if row.group != root as i32 && descendants.contains(&row.group) {
+                    -row.group
+                } else {
+                    row.id
+                },
+            );
         }
     }
     Ok(targets.into_iter().collect())
@@ -85,7 +117,7 @@ pub(super) async fn stop_cancelled_descendants(cancellation: &super::Cancellatio
         match descendant_targets(root, false).await {
             Ok(targets) => {
                 for target in targets {
-                    if kill_target(target).is_err() {
+                    if kill_target(target).await.is_err() {
                         cancellation.mark_uncertain();
                     }
                 }
@@ -101,11 +133,11 @@ pub(super) async fn terminate(child: &mut Child) -> std::io::Result<()> {
     #[cfg(unix)]
     if let Some(id) = child.id() {
         let targets = descendant_targets(id, true).await;
-        let mut result = kill_target(-(id as i32));
+        let mut result = kill_target(-(id as i32)).await;
         match targets {
             Ok(targets) => {
                 for target in targets.into_iter().filter(|target| *target != -(id as i32)) {
-                    let killed = kill_target(target);
+                    let killed = kill_target(target).await;
                     if result.is_ok() {
                         result = killed;
                     }
@@ -113,7 +145,17 @@ pub(super) async fn terminate(child: &mut Child) -> std::io::Result<()> {
             }
             Err(error) => result = Err(error),
         }
-        let killed = child.start_kill();
+        let killed = if child.try_wait()?.is_some() {
+            Ok(())
+        } else {
+            child.start_kill().or_else(|error| {
+                if child.try_wait()?.is_some() {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            })
+        };
         return result.and(killed);
     }
     child.start_kill()
@@ -166,7 +208,7 @@ pub(super) async fn reap_with_cancellation(
     #[cfg(unix)]
     let result = if cancellation.is_cancelled() && matches!(&result, Ok(Some(_))) {
         match group {
-            Some(group) => kill_target(-(group as i32)).and(result),
+            Some(group) => kill_target(-(group as i32)).await.and(result),
             None => result,
         }
     } else {
@@ -284,3 +326,7 @@ pub(super) fn spawn(
     let stderr = StderrCapture::start(child.stderr.take().expect("piped stderr"));
     Ok((child, stderr))
 }
+
+#[cfg(all(test, unix))]
+#[path = "process_tests.rs"]
+mod tests;

@@ -96,6 +96,14 @@ pub(super) struct CancelDeliveryArgs {
     pub(super) delivery_ids: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub(super) struct ClearUncertainDeliveryArgs {
+    pub(super) workspace: PathBuf,
+    pub(super) room_id: String,
+    pub(super) seat: String,
+    pub(super) delivery_id: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct SeatView {
     id: String,
@@ -106,6 +114,7 @@ pub(super) struct SeatView {
     native_session: bool,
     resume_command: Option<String>,
     previous_delivery_uncertain: bool,
+    uncertain_delivery_id: Option<String>,
     status: SeatStatus,
 }
 
@@ -136,7 +145,7 @@ pub(super) struct ListRoomsOutput {
 pub(super) type AddSeatOutput = CreateRoomOutput;
 
 #[derive(Debug, Serialize)]
-pub(super) struct RetireSeatOutput {
+pub(super) struct RoomOutput {
     pub(super) room: RoomView,
 }
 
@@ -154,18 +163,22 @@ pub(super) fn room_view(room: &RoomRecord, store: &StateStore) -> RoomView {
         seats: room
             .seats
             .iter()
-            .map(|seat| SeatView {
-                id: seat.id.clone(),
-                name: seat.name.clone(),
-                agent: seat.agent,
-                model: seat.model.clone(),
-                reasoning_effort: seat.reasoning_effort.clone(),
-                native_session: seat.native_session_id.is_some(),
-                resume_command: seat.native_session_id.as_deref().and_then(|session| {
-                    adapters::resume_command(seat.agent, &room.workspace, session)
-                }),
-                previous_delivery_uncertain: store.seat_dispatch_uncertain(&room.id, &seat.id),
-                status: seat.status,
+            .map(|seat| {
+                let uncertain_delivery_id = store.uncertain_delivery_id(&room.id, &seat.id);
+                SeatView {
+                    id: seat.id.clone(),
+                    name: seat.name.clone(),
+                    agent: seat.agent,
+                    model: seat.model.clone(),
+                    reasoning_effort: seat.reasoning_effort.clone(),
+                    native_session: seat.native_session_id.is_some(),
+                    resume_command: seat.native_session_id.as_deref().and_then(|session| {
+                        adapters::resume_command(seat.agent, &room.workspace, session)
+                    }),
+                    previous_delivery_uncertain: uncertain_delivery_id.is_some(),
+                    uncertain_delivery_id,
+                    status: seat.status,
+                }
             })
             .collect(),
         created_at: room.created_at.clone(),

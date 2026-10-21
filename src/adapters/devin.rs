@@ -65,6 +65,10 @@ pub(super) async fn run(invocation: Invocation, prompt: &str) -> AdapterOutput {
     let stdout = raw_lines.join("\n");
     let stdout = stdout.trim();
     let exported = read_export(&export);
+    let observation_error = exported
+        .as_ref()
+        .and_then(|(id, _)| id.as_deref())
+        .and_then(|id| invocation.session_observer.observe(id).err());
     if stdout_eof && !stdout.is_empty()
         || exported
             .as_ref()
@@ -91,21 +95,26 @@ pub(super) async fn run(invocation: Invocation, prompt: &str) -> AdapterOutput {
     let stderr = String::from_utf8_lossy(&stderr.finish().await).into_owned();
     let exported = read_export(&export).or(exported);
     let (exported_session, exported_answer) = exported.unwrap_or_default();
-    // A resumed turn whose export reports a different session id means devin
-    // forked or lost the seat's session; fail the delivery instead of letting
-    // the foreign id surface and strand the seat.
     let session_mismatch = match (&invocation.native_session_id, &exported_session) {
         (Some(expected), Some(observed)) if expected != observed => Some(format!(
             "devin resumed session '{expected}' but its export reported '{observed}'"
         )),
         _ => None,
     };
-    // A resumed turn whose export omits the session id keeps the seat's
-    // existing native session instead of failing the delivery.
     let session = match session_mismatch {
         Some(_) => invocation.native_session_id.clone(),
         None => exported_session.or_else(|| invocation.native_session_id.clone()),
     };
+    let observation = observation_error.map_or_else(
+        || {
+            session
+                .as_deref()
+                .map(|id| invocation.session_observer.observe(id))
+                .transpose()
+                .map(|_| ())
+        },
+        Err,
+    );
     let result = match status {
         Err(error) => Err(format!(
             "failed to wait for {}: {error}",
@@ -136,7 +145,10 @@ pub(super) async fn run(invocation: Invocation, prompt: &str) -> AdapterOutput {
                 .ok_or_else(|| error_text("agent returned no final answer", &stderr, "")),
         },
     };
-    AdapterOutput::from_result(session, result)
+    AdapterOutput::from_result(
+        session,
+        observation.map_err(|error| error.to_string()).and(result),
+    )
 }
 
 fn private_export_dir() -> Result<tempfile::TempDir> {
@@ -235,6 +247,7 @@ mod tests {
             message: "Analyze this".into(),
             first_message: true,
             cancellation: Default::default(),
+            session_observer: Default::default(),
         }
     }
 
