@@ -25,7 +25,7 @@ use process::{error_text, reap, redact_secrets, truncate};
 pub(crate) use readiness::{
     check_readiness, find_executable, find_executable_by_names, readiness, resolve_kimi_home,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 #[derive(Clone, Debug)]
@@ -45,12 +45,31 @@ pub(crate) struct Invocation {
 
 impl Invocation {
     fn command(&self) -> Command {
-        let mut command = Command::new(&self.executable);
-        command
-            .current_dir(&self.workspace)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE");
-        command
+        native_command(&self.executable, &self.workspace)
+    }
+}
+
+fn native_command(executable: &Path, workspace: &Path) -> Command {
+    let mut command = Command::new(executable);
+    command
+        .current_dir(workspace)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE");
+    command
+}
+
+pub(crate) async fn archive_native_session(
+    agent: AgentKind,
+    workspace: &Path,
+    session_id: &str,
+) -> anyhow::Result<()> {
+    match agent {
+        AgentKind::Codex => {
+            let executable = find_executable(agent)
+                .ok_or_else(|| anyhow::anyhow!("codex executable not found on PATH"))?;
+            codex::archive(&executable, workspace, session_id).await
+        }
+        _ => Ok(()),
     }
 }
 

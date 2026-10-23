@@ -1,9 +1,24 @@
+use std::path::Path;
+use std::process::Stdio;
+
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{ChildStdin, ChildStdout};
+use tokio::process::{Child, ChildStdin, ChildStdout};
 
+use super::process::StderrCapture;
 use super::{AdapterOutput, Invocation, error_text};
+
+#[derive(Debug)]
+struct RpcError(String);
+
+impl std::fmt::Display for RpcError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for RpcError {}
 
 struct Connection {
     input: ChildStdin,
@@ -16,6 +31,18 @@ struct Connection {
 }
 
 impl Connection {
+    fn attach(child: &mut Child, cancellation: super::Cancellation) -> Self {
+        Self {
+            input: child.stdin.take().expect("piped stdin"),
+            output: BufReader::new(child.stdout.take().expect("piped stdout")).lines(),
+            next_id: 0,
+            events: Vec::new(),
+            question: None,
+            cancellation,
+            thread: None,
+        }
+    }
+
     async fn write(&mut self, value: Value) -> Result<()> {
         let mut bytes = serde_json::to_vec(&value)?;
         bytes.push(b'\n');
@@ -42,13 +69,11 @@ impl Connection {
             let value = self.read().await?;
             if value.get("id") == Some(&json!(id)) && value.get("method").is_none() {
                 if let Some(error) = value.get("error") {
-                    bail!(
-                        "{method}: {}",
-                        error
-                            .get("message")
-                            .and_then(Value::as_str)
-                            .unwrap_or("native request failed")
-                    );
+                    let message = error
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("native request failed");
+                    return Err(RpcError(format!("{method}: {message}")).into());
                 }
                 return value
                     .get("result")
@@ -92,12 +117,7 @@ impl Connection {
         self.write(response).await
     }
 
-    async fn execute(
-        &mut self,
-        invocation: &Invocation,
-        prompt: &str,
-        binding: &mut Option<String>,
-    ) -> Result<String> {
+    async fn initialize(&mut self) -> Result<()> {
         self.request(
             "initialize",
             json!({
@@ -106,7 +126,33 @@ impl Connection {
             }),
         )
         .await?;
-        self.write(json!({"method":"initialized"})).await?;
+        self.write(json!({"method":"initialized"})).await
+    }
+
+    async fn resume(&mut self, params: Value) -> Result<Value> {
+        let error = match self.request("thread/resume", params.clone()).await {
+            Err(error) if error.is::<RpcError>() => error,
+            result => return result,
+        };
+        if let Err(unarchive) = self
+            .request(
+                "thread/unarchive",
+                json!({"threadId":params["threadId"].clone()}),
+            )
+            .await
+        {
+            bail!("{error}; {unarchive}");
+        }
+        self.request("thread/resume", params).await
+    }
+
+    async fn execute(
+        &mut self,
+        invocation: &Invocation,
+        prompt: &str,
+        binding: &mut Option<String>,
+    ) -> Result<String> {
+        self.initialize().await?;
         let mut params = json!({
             "cwd":invocation.workspace,
             "approvalPolicy":"never",
@@ -115,8 +161,8 @@ impl Connection {
         if let Some(model) = &invocation.model {
             params["model"] = json!(model);
         }
-        let method = if invocation.first_message {
-            "thread/start"
+        let response = if invocation.first_message {
+            self.request("thread/start", params).await?
         } else {
             params["threadId"] = json!(
                 invocation
@@ -125,9 +171,8 @@ impl Connection {
                     .context("Codex resume requires a native session ID")?
             );
             params["excludeTurns"] = json!(true);
-            "thread/resume"
+            self.resume(params).await?
         };
-        let response = self.request(method, params).await?;
         let thread = response
             .pointer("/thread/id")
             .and_then(Value::as_str)
@@ -231,6 +276,40 @@ impl Connection {
     }
 }
 
+pub(super) async fn archive(executable: &Path, workspace: &Path, thread: &str) -> Result<()> {
+    let mut command = super::native_command(executable, workspace);
+    let mut child = command
+        .arg("app-server")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .context("failed to start codex app-server")?;
+    let stderr = StderrCapture::start(child.stderr.take().expect("piped stderr"));
+    let mut connection = Connection::attach(&mut child, Default::default());
+    let result = tokio::time::timeout(ARCHIVE_TIMEOUT, async {
+        connection.initialize().await?;
+        connection
+            .request("thread/archive", json!({"threadId":thread}))
+            .await
+    })
+    .await
+    .unwrap_or_else(|_| Err(anyhow::anyhow!("thread/archive timed out")));
+    drop(connection);
+    let _ = super::process::reap(&mut child).await;
+    let stderr = stderr.finish().await;
+    result.map(drop).map_err(|error| {
+        anyhow::anyhow!(error_text(
+            &error.to_string(),
+            &String::from_utf8_lossy(&stderr),
+            ""
+        ))
+    })
+}
+
+const ARCHIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub(super) async fn run(invocation: Invocation, prompt: &str) -> AdapterOutput {
     let mut command = invocation.command();
     command.arg("app-server");
@@ -238,15 +317,7 @@ pub(super) async fn run(invocation: Invocation, prompt: &str) -> AdapterOutput {
         Ok(process) => process,
         Err(error) => return AdapterOutput::failed(error.to_string()),
     };
-    let mut connection = Connection {
-        input: child.stdin.take().expect("piped stdin"),
-        output: BufReader::new(child.stdout.take().expect("piped stdout")).lines(),
-        next_id: 0,
-        events: Vec::new(),
-        question: None,
-        cancellation: invocation.cancellation.clone(),
-        thread: None,
-    };
+    let mut connection = Connection::attach(&mut child, invocation.cancellation.clone());
     let mut observed_session_id = None;
     let result = tokio::select! {
         result = connection.execute(&invocation, prompt, &mut observed_session_id) => result,
