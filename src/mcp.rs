@@ -111,7 +111,7 @@ impl ConferMcp {
     }
 
     #[tool(
-        description = "Retire one seat in a room. Pass the normalized workspace root already verified against your actual current task when creating or recovering the room. A different workspace is rejected; never substitute another room's workspace to bypass a mismatch. A retired seat keeps its metadata and native session mapping but can no longer receive messages. A known running delivery must finish first.",
+        description = "Retire one seat in a room. Pass the normalized workspace root already verified against your actual current task when creating or recovering the room. A different workspace is rejected; never substitute another room's workspace to bypass a mismatch. A retired seat keeps its metadata and native session mapping but can no longer receive messages. A known running delivery must finish first. When the seat has a Codex thread, Confer then archives that thread on a best-effort basis.",
         annotations(
             title = "Retire seat",
             read_only_hint = false,

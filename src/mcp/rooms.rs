@@ -125,6 +125,16 @@ impl ConferMcp {
             Ok(room.clone())
         })?;
         self.runtime.stop_seat(&room.id, &seat_id).await;
+        if let Some(seat) = room.seats.iter().find(|seat| seat.id == seat_id)
+            && let Some(session) = &seat.native_session_id
+            && let Err(error) =
+                adapters::archive_native_session(seat.agent, &workspace, session).await
+        {
+            eprintln!(
+                "Confer could not archive native session {session} of retired seat '{}': {error:#}",
+                seat.name
+            );
+        }
         Ok(RoomOutput {
             room: room_view(&room, &self.store),
         })
