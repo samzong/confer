@@ -36,38 +36,38 @@ Follow [confer](../confer/SKILL.md) for rooms, model selection, privacy, deliver
 
 Choose the partner role from the gap first. Use Build Standard for development by default. For other tasks, choose Fast or Deep from complexity and consequence:
 
-| Role | Use for |
+|Role|Use for|
 |---|---|
-| Research Fast | Clear lookups, source checks, narrow code location |
-| Research Deep | Unknown root cause, cross-module causal analysis, architecture trade-offs and refutation |
-| Build Fast | Small implementation or direct execution with a settled approach and acceptance criteria |
-| Build Standard | Development ownership: investigation, approach selection, main implementation, integration, and verification |
-| Build Deep | Read-only design consultation as needed, or bounded implementation when explicitly assigned |
-| Review Fast | Independent read-only review of a routine, low-risk target |
-| Review Deep | Independent review of persistence, security, money, concurrency, public contracts, or irreversible changes |
-| Ops | Read-only runtime and production investigation, logs, traces, metrics, impact assessment, and rollback advice |
+|Research Fast|Clear lookups, source checks, narrow code location|
+|Research Deep|Unknown root cause, cross-module causal analysis, architecture trade-offs and refutation|
+|Build Fast|Small implementation or direct execution with a settled approach and acceptance criteria|
+|Build Standard|Development ownership: investigation, approach selection, main implementation, integration, and verification|
+|Architect|Read-only design consultation as needed, or bounded implementation when explicitly assigned|
+|Review Fast|Independent read-only review of a routine, low-risk target|
+|Review Deep|Independent review of persistence, security, money, concurrency, public contracts, or irreversible changes|
+|Ops|Read-only runtime and production investigation, logs, traces, metrics, impact assessment, and rollback advice|
 
 For Standard, select the agent best suited to the codebase with high reasoning effort. Do not default to the strongest reasoning model. For Fast, select a fast, low-cost model with reasoning effort of at least `high`. Tests showed that Fast models at low reasoning effort asserted facts without tool execution. If you cannot establish that Fast meets this minimum, report the limitation. Do not dispatch Fast at lower reasoning effort.
 
-For Deep, select the strongest reasoning model currently available with high reasoning effort.
+For Architect and Deep, select the strongest reasoning model currently available with high reasoning effort.
 
 Set reasoning effort only when the selected agent supports it. Use values allowed by the confer rules. Select the concrete agent, model, and reasoning effort when creating the seat. Use agents Confer can currently use and models available on this machine. Do not hard-code them in this skill. The user's choice of agent, model, or reasoning effort takes precedence.
 
-If a specified Standard agent or model is unavailable, report the limitation. Do not silently replace it with Deep.
+If a specified Standard agent or model is unavailable, report the limitation. Do not silently replace it with an Architect.
 
 Grade the task before dispatch, after reading the task and key materials. Do not grade by file count or changed lines alone. A Fast partner's escalation request supplements the host's assessment. It does not replace the host's identification of complex or high-consequence boundaries. Do not escalate because the task mentions a technical term. Make sure that the grade reflects the behavior that the task actually changes.
 
-Complexity alone does not transfer the whole development task to Build Deep.
+Complexity alone does not transfer the whole development task to an Architect.
 
 Before a handoff, make sure that the previous partner finished and has no related queued deliveries. Make sure that you established its side effects and that its results match the evidence. Give the next partner the specific gap and completed results. Never let two partners take over the same write scope at the same time.
 
 Build Standard first reads the code, callers, and actual state. It compares the existing path with the strongest simpler alternative and decides routine technical questions. It retains the main implementation, cross-module boundaries, high-consequence work, integration, and final verification.
 
-Consult Build Deep only for one specific question: a design question that affects the choice, a contradiction that remains after investigation, or a proposal that needs independent refutation. The host adds a Build Deep seat in the same room. Give it the specific question, necessary original materials and versions, constraints, and candidates. Include unknown facts that decide the choice. By default, Build Deep is read-only.
+Consult an Architect only for one specific question: a design question that affects the choice, a contradiction that remains after investigation, or a proposal that needs independent refutation. The host adds an Architect seat in the same room. Give it the specific question, necessary original materials and versions, constraints, and candidates. Include unknown facts that decide the choice. By default, an Architect is read-only.
 
 Request a recommendation, the strongest alternative, evidence, failure paths, and verification methods. The host relays the advice to Build Standard. Build Standard makes sure that the advice fits the evidence before implementation. A consultant that participated in design cannot provide the independent review pass for that design.
 
-If Build Deep is explicitly assigned implementation, define its write scope and acceptance criteria. Apply the handoff requirements before transferring writes. Build Standard retains development ownership.
+If an Architect is explicitly assigned implementation, define its write scope and acceptance criteria. Apply the handoff requirements before transferring writes. Build Standard retains development ownership.
 
 Every brief must include the following information:
 
