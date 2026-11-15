@@ -64,6 +64,32 @@ fn unavailable_requested_agent_fails_even_when_an_alternative_is_ready() {
 }
 
 #[test]
+fn explicit_rx_seat_is_not_replaced_and_preserves_role_configuration() {
+    let request = SeatSpecInput {
+        agent: Some("rx".into()),
+        model: Some("tokener/kimi-k3.1".into()),
+        reasoning_effort: Some("high".into()),
+        name: Some("builder".into()),
+        instructions: Some("Implement the assigned change.".into()),
+    };
+    let seats = select_seats(
+        vec![request],
+        1,
+        Some("rx"),
+        &[ready(AgentKind::Rx), ready(AgentKind::Codex)],
+        HashSet::new(),
+    )
+    .unwrap();
+    assert_eq!(seats[0].agent, AgentKind::Rx);
+    assert_eq!(seats[0].model.as_deref(), Some("tokener/kimi-k3.1"));
+    assert_eq!(seats[0].reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(
+        seats[0].instructions.as_deref(),
+        Some("Implement the assigned change.")
+    );
+}
+
+#[test]
 fn added_seat_uses_a_unique_room_address() {
     let names = ["claude".to_string()].into_iter().collect();
     let request = SeatSpecInput {
@@ -178,6 +204,7 @@ fn seat_selection_validates_the_final_agent_configuration() {
         (AgentKind::Claude, None, Some("invalid")),
         (AgentKind::Agy, None, Some("xhigh")),
         (AgentKind::Kimi, None, Some("none")),
+        (AgentKind::Rx, None, Some("none")),
     ] {
         let request = SeatSpecInput {
             agent: Some(agent.id().into()),

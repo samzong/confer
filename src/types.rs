@@ -14,10 +14,11 @@ pub(crate) enum AgentKind {
     Kimi,
     Devin,
     Opencode,
+    Rx,
 }
 
 impl AgentKind {
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::Claude,
         Self::Codex,
         Self::Cursor,
@@ -27,6 +28,7 @@ impl AgentKind {
         Self::Kimi,
         Self::Devin,
         Self::Opencode,
+        Self::Rx,
     ];
 
     pub(crate) fn id(self) -> &'static str {
@@ -40,6 +42,7 @@ impl AgentKind {
             Self::Kimi => "kimi",
             Self::Devin => "devin",
             Self::Opencode => "opencode",
+            Self::Rx => "rx",
         }
     }
 
@@ -54,6 +57,7 @@ impl AgentKind {
             "kimi" | "kimi-code" | "kimi-code-cli" | "kimi-cli" => Some(Self::Kimi),
             "devin" | "devin-cli" => Some(Self::Devin),
             "opencode" | "opencode-cli" => Some(Self::Opencode),
+            "rx" | "rxa" => Some(Self::Rx),
             _ => None,
         }
     }
@@ -69,6 +73,7 @@ impl AgentKind {
             Self::Kimi => &["kimi"],
             Self::Devin => &["devin"],
             Self::Opencode => &["opencode"],
+            Self::Rx => &["rxa"],
         }
     }
 
@@ -83,6 +88,7 @@ impl AgentKind {
             Self::Kimi => "kimi-cli",
             Self::Devin => "devin",
             Self::Opencode => "opencode",
+            Self::Rx => "rx-agent",
         }
     }
 }

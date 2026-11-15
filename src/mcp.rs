@@ -6,7 +6,7 @@ mod rooms;
 use anyhow::Result;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Implementation, ServerCapabilities, ServerInfo, Tool};
+use rmcp::model::{CallToolResult, Implementation, ServerCapabilities, ServerConfig, Tool};
 use rmcp::{ServerHandler, ServiceExt, tool, tool_handler, tool_router, transport::stdio};
 use serde::Serialize;
 
@@ -25,7 +25,7 @@ pub(crate) enum CapabilitiesFormat {
 
 #[derive(Debug, Serialize)]
 struct CapabilitiesReport {
-    server: ServerInfo,
+    server: ServerConfig,
     tools: Vec<Tool>,
 }
 
@@ -209,13 +209,13 @@ impl ConferMcp {
 
 #[tool_handler]
 impl ServerHandler for ConferMcp {
-    fn get_info(&self) -> ServerInfo {
-        server_info()
+    fn get_info(&self) -> ServerConfig {
+        server_config()
     }
 }
 
-fn server_info() -> ServerInfo {
-    ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+fn server_config() -> ServerConfig {
+    ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         .with_server_info(Implementation::new("confer", env!("CARGO_PKG_VERSION")))
         .with_instructions(
             "Confer provides local coding-agent execution through MCP. The caller manages task decomposition, room reuse, relays, and result acceptance. The host is not an execution seat. Create rooms with target_size or explicit seats; automatic selection prefers agent types other than the host, and identical configurations may occupy multiple independent seats. Explicit unavailable agents fail without replacement. Seats receive only addressed messages and use per-seat FIFO queues.",
@@ -225,7 +225,7 @@ fn server_info() -> ServerInfo {
 fn capabilities() -> Result<CapabilitiesReport> {
     let server = ConferMcp::new()?;
     Ok(CapabilitiesReport {
-        server: server_info(),
+        server: server_config(),
         tools: server.tool_router.list_all(),
     })
 }

@@ -16,6 +16,7 @@ async fn configured_session(
     rejected: Option<(&str, &str)>,
 ) {
     crate::adapters::validate_invocation(&invocation).unwrap();
+    let first_message = invocation.first_message;
     let attach = match (invocation.first_message, invocation.agent) {
         (true, _) => "new",
         (false, AgentKind::Kimi | AgentKind::Grok | AgentKind::Opencode) => "resume",
@@ -36,9 +37,10 @@ async fn configured_session(
     let (output, calls) = run_script(invocation, true, script).await;
     if let Some((_, message)) = rejected {
         assert!(!calls.contains(&"prompt"));
+        let expected_session = (!first_message).then_some("native-session");
         assert_eq!(
             output.observed_session_id.as_deref(),
-            Some("native-session"),
+            expected_session,
             "{output:?}"
         );
         assert!(output.answer.is_none());
@@ -163,6 +165,72 @@ async fn opencode_unsupported_model_effort_keeps_session_without_prompting() {
         invocation,
         vec![],
         Some(("effort", "Invalid params: effort not found: high")),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn rx_applies_model_then_thinking_on_create_and_load() {
+    for (first, model, effort) in [
+        (true, Some("tokener/kimi-k3.1"), Some("high")),
+        (false, Some("tokener/claude-opus-5"), Some("medium")),
+        (false, None, Some("off")),
+        (true, None, None),
+    ] {
+        let mut invocation = invocation(first);
+        invocation.agent = AgentKind::Rx;
+        invocation.model = model.map(str::to_owned);
+        invocation.reasoning_effort = effort.map(str::to_owned);
+        let expected = model
+            .map(|value| ("model", value))
+            .into_iter()
+            .chain(effort.map(|value| ("thinking", value)))
+            .collect();
+        configured_session(invocation, expected, None).await;
+    }
+}
+
+#[tokio::test]
+async fn rx_unsupported_thinking_fails_before_the_prompt() {
+    let mut invocation = invocation(true);
+    invocation.agent = AgentKind::Rx;
+    invocation.model = Some("tokener/kimi-k3.1".into());
+    invocation.reasoning_effort = Some("low".into());
+    configured_session(
+        invocation,
+        vec![],
+        Some((
+            "thinking",
+            "thinking level is not supported by the selected model",
+        )),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn non_rx_acp_agents_keep_their_configuration_and_recovery_paths() {
+    let mut invocation = super::invocation(false);
+    invocation.agent = AgentKind::Kimi;
+    invocation.model = Some("kimi-code/k3".into());
+    invocation.reasoning_effort = Some("high".into());
+    configured_session(
+        invocation,
+        vec![
+            ("mode", "auto"),
+            ("model", "kimi-code/k3"),
+            ("thinking", "high"),
+        ],
+        None,
+    )
+    .await;
+
+    let mut invocation = super::invocation(false);
+    invocation.agent = AgentKind::Opencode;
+    invocation.model = Some("opencode/big-pickle".into());
+    configured_session(
+        invocation,
+        vec![("mode", "build"), ("model", "opencode/big-pickle")],
+        None,
     )
     .await;
 }

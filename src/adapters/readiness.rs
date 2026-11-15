@@ -66,6 +66,9 @@ fn has_local_auth_marker(agent: AgentKind) -> bool {
         AgentKind::Grok => std::env::var_os("XAI_API_KEY").is_some(),
         AgentKind::Agy | AgentKind::Kimi | AgentKind::Devin => false,
         AgentKind::Opencode => true,
+        AgentKind::Rx => ["OPENROUTER_API_KEY", "TOKENER_API_KEY", "DEEPSEEK_API_KEY"]
+            .iter()
+            .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty())),
         AgentKind::Copilot => [
             "COPILOT_GITHUB_TOKEN",
             "GH_TOKEN",
@@ -102,6 +105,7 @@ fn has_local_auth_marker(agent: AgentKind) -> bool {
         }
         AgentKind::Devin => return devin_has_credentials(&home),
         AgentKind::Opencode => return true,
+        AgentKind::Rx => return rx_has_credentials(&home),
     };
     markers.iter().any(|marker| home.join(marker).is_file())
 }
@@ -163,6 +167,74 @@ fn copilot_home(home: &Path) -> PathBuf {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".copilot"))
+}
+
+#[derive(serde::Deserialize)]
+struct RxConfig {
+    default_provider: Option<String>,
+    #[serde(default)]
+    provider: std::collections::BTreeMap<String, RxProvider>,
+}
+
+#[derive(serde::Deserialize)]
+struct RxProvider {
+    auth: Option<String>,
+    env: Option<String>,
+}
+
+pub(super) fn rx_has_credentials(home: &Path) -> bool {
+    let Ok(rx_home) = resolve_rx_home(std::env::var_os("RX_HOME"), Some(home.to_path_buf())) else {
+        return false;
+    };
+    if rx_home.join("auth.json").is_file() {
+        return true;
+    }
+    let launcher = home.join(".recall");
+    let Ok(keys) = std::fs::read_to_string(launcher.join("rx.keys")) else {
+        return false;
+    };
+    let Ok(keys) = toml::from_str::<std::collections::BTreeMap<String, toml::Value>>(&keys) else {
+        return false;
+    };
+    let Ok(config) = std::fs::read_to_string(launcher.join("rx.toml")) else {
+        return keys.contains_key("openrouter");
+    };
+    let Ok(config) = toml::from_str::<RxConfig>(&config) else {
+        return false;
+    };
+    let Some(provider) = config.default_provider.as_deref().or(Some("openrouter")) else {
+        return false;
+    };
+    if provider == "none" {
+        return false;
+    }
+    match config.provider.get(provider) {
+        Some(entry) if entry.auth.as_deref() == Some("env") => entry
+            .env
+            .as_deref()
+            .is_some_and(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty())),
+        _ => keys.contains_key(provider),
+    }
+}
+
+pub(crate) fn resolve_rx_home(
+    rx_home: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Result<PathBuf> {
+    match rx_home.filter(|value| !value.is_empty()) {
+        Some(dir) => {
+            let dir = PathBuf::from(dir);
+            if dir.is_absolute() {
+                Ok(dir)
+            } else {
+                let cwd = std::env::current_dir().context("cannot determine current directory")?;
+                Ok(cwd.join(dir))
+            }
+        }
+        None => home
+            .map(|home| home.join(".rx"))
+            .context("cannot determine home directory"),
+    }
 }
 
 pub(crate) fn resolve_kimi_home(

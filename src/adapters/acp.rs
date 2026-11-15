@@ -192,7 +192,7 @@ pub(super) async fn run_connection(
                     output.active_session = Some(session.to_string());
                     output.text.clear();
                 }
-                if native {
+                if native && !invocation.first_message {
                     state.lock().expect("ACP output lock").native_id = Some(session.to_string());
                     invocation
                         .session_observer
@@ -231,6 +231,13 @@ pub(super) async fn run_connection(
                     ))
                     .block_task()
                     .await?;
+                }
+                if native && invocation.first_message {
+                    state.lock().expect("ACP output lock").native_id = Some(session.to_string());
+                    invocation
+                        .session_observer
+                        .observe(&session.to_string())
+                        .map_err(|error| Error::new(-32000, error.to_string()))?;
                 }
                 let prompt = cx
                     .send_request(PromptRequest::new(

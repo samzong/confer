@@ -113,6 +113,7 @@ async fn run_script(
                             AgentKind::Grok => json!({"sessionId":"native-session","models":{"currentModelId":"configured-model","availableModels":[{"modelId":"configured-model","name":"Configured model"}]}}),
                             AgentKind::Kimi => json!({"sessionId":"native-session","configOptions":[{"type":"select","id":"thinking","currentValue":"on","options":[{"value":"on"}]},{"type":"select","id":"mode","currentValue":"default"}]}),
                             AgentKind::Copilot => json!({"sessionId":"native-session","configOptions":[{"type":"select","id":"allow_all","currentValue":"on","options":[]}]}),
+                            AgentKind::Rx => json!({"sessionId":"native-session","configOptions":[{"type":"select","id":"model","currentValue":"tokener/claude-opus-5","options":[]},{"type":"select","id":"thinking","currentValue":"medium","options":[]}]}),
                             _ => json!({"sessionId":"native-session"}),
                         };
                         responder.respond(response)
@@ -347,8 +348,17 @@ async fn permission_callbacks_complete_while_the_prompt_is_pending() {
 async fn cancellation_notifies_the_active_session_and_keeps_partial_text() {
     use agent_client_protocol::schema::v1::CancelNotification;
     let mut invocation = invocation(true);
-    invocation.cancellation = Default::default();
+    invocation.agent = AgentKind::Rx;
+    invocation.first_message = true;
     let cancellation = invocation.cancellation.clone();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    invocation.session_observer = crate::adapters::SessionObserver::new({
+        let observed = observed.clone();
+        move |id| {
+            observed.lock().unwrap().push(id.to_owned());
+            Ok(())
+        }
+    });
     let ended = Arc::new(tokio::sync::Notify::new());
     let cancelled = ended.clone();
     let (ready, started) = tokio::sync::oneshot::channel();
@@ -397,6 +407,7 @@ async fn cancellation_notifies_the_active_session_and_keeps_partial_text() {
         Some("native-session")
     );
     assert_eq!(output.answer.as_deref(), Some("partial answer"));
+    assert_eq!(observed.lock().unwrap().as_slice(), ["native-session"]);
     task.await.unwrap().unwrap();
 }
 

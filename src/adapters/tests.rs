@@ -237,6 +237,83 @@ fn devin_rejects_reasoning_effort() {
 }
 
 #[test]
+fn rx_home_respects_env_override_and_default() {
+    use std::ffi::OsString;
+    let home = PathBuf::from("/home/test");
+    assert_eq!(
+        super::resolve_rx_home(Some(OsString::from("/custom/rx")), Some(home.clone())).unwrap(),
+        PathBuf::from("/custom/rx")
+    );
+    assert_eq!(
+        super::resolve_rx_home(None, Some(home)).unwrap(),
+        PathBuf::from("/home/test/.rx")
+    );
+    assert!(super::resolve_rx_home(None, None).is_err());
+    let cwd = std::env::current_dir().unwrap();
+    assert_eq!(
+        super::resolve_rx_home(Some(OsString::from("relative/rx")), None).unwrap(),
+        cwd.join("relative/rx")
+    );
+}
+
+#[test]
+fn rx_auth_marker_accepts_native_store_and_launcher_provider_without_reading_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    assert!(!super::readiness::rx_has_credentials(home));
+    std::fs::create_dir_all(home.join(".rx")).unwrap();
+    std::fs::write(home.join(".rx/auth.json"), "{}").unwrap();
+    assert!(super::readiness::rx_has_credentials(home));
+    std::fs::remove_file(home.join(".rx/auth.json")).unwrap();
+    std::fs::create_dir_all(home.join(".recall")).unwrap();
+    std::fs::write(
+        home.join(".recall/rx.toml"),
+        "default_provider = \"tokener\"\n",
+    )
+    .unwrap();
+    assert!(!super::readiness::rx_has_credentials(home));
+    std::fs::write(
+        home.join(".recall/rx.keys"),
+        "tokener = \"not-a-real-key\"\n",
+    )
+    .unwrap();
+    assert!(super::readiness::rx_has_credentials(home));
+}
+
+#[test]
+fn rx_accepts_native_thinking_and_rejects_unsupported_values() {
+    for effort in [
+        None,
+        Some("off"),
+        Some("minimal"),
+        Some("low"),
+        Some("medium"),
+        Some("high"),
+        Some("xhigh"),
+        Some("max"),
+    ] {
+        assert!(
+            super::validate_seat_config(AgentKind::Rx, None, effort).is_ok(),
+            "{effort:?}"
+        );
+    }
+    for effort in ["none", "on", "ultra", "not-a-level"] {
+        assert!(
+            super::validate_seat_config(AgentKind::Rx, None, Some(effort)).is_err(),
+            "{effort}"
+        );
+    }
+}
+
+#[test]
+fn rx_resume_uses_the_native_session() {
+    assert_eq!(
+        super::resume_command(AgentKind::Rx, "/workspace", "session-1").as_deref(),
+        Some("cd /workspace && rxa --resume session-1")
+    );
+}
+
+#[test]
 fn kimi_home_respects_env_override_and_default() {
     use std::ffi::OsString;
     let home = PathBuf::from("/home/test");

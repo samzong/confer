@@ -27,7 +27,13 @@ pub(crate) fn validate_seat_config(
             AgentKind::Kimi => {
                 (!["on", "low", "high", "max"].contains(&effort)).then_some("Kimi thinking")
             }
-            AgentKind::Opencode => None,
+            AgentKind::Rx
+                if !["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+                    .contains(&effort) =>
+            {
+                Some("Rx thinking")
+            }
+            AgentKind::Opencode | AgentKind::Rx => None,
             AgentKind::Devin => Some("Devin reasoning_effort"),
             _ if !general.contains(&effort) => Some("reasoning_effort"),
             AgentKind::Agy if !["low", "medium", "high"].contains(&effort) => {
@@ -90,6 +96,7 @@ pub(super) fn session_options(invocation: &Invocation) -> Result<Vec<(&str, &str
         AgentKind::Copilot => (None, "reasoning_effort"),
         AgentKind::Opencode => (Some(("mode", "build")), "effort"),
         AgentKind::Kimi => (Some(("mode", "auto")), "thinking"),
+        AgentKind::Rx => (None, "thinking"),
         _ => return Ok(Vec::new()),
     };
     Ok(mode

@@ -1,6 +1,6 @@
 ---
 name: confer
-description: Coordinate Claude Code, Codex, Cursor Agent, Grok, Antigravity CLI (gemini), GitHub Copilot CLI, Kimi Code, Devin for Terminal, and OpenCode through private local MCP rooms. Trigger when the user asks to consult another agent, have multiple agents investigate independently, divide planning and implementation, compare answers, or request an independent review without copying between terminals.
+description: Coordinate Claude Code, Codex, Cursor Agent, Grok, Antigravity CLI (gemini), GitHub Copilot CLI, Kimi Code, Devin for Terminal, OpenCode, and Rx through private local MCP rooms. Trigger when the user asks to consult another agent, have multiple agents investigate independently, divide planning and implementation, compare answers, or request an independent review without copying between terminals.
 ---
 
 # Confer
@@ -20,6 +20,7 @@ A bare family name means the latest model in that family. A version pins that mo
 - Claude families `opus`, `sonnet`, `haiku`, and `fable` use `agent: "claude"`. Without a version, pass the family word as `model`; the Claude CLI resolves it to the latest model in that family. With a version, pass the native id `claude-<family>-<major>-<minor>`: `opus 5.5` and `opus-5.5` are `claude-opus-5-5`, not `opus-5.5`.
 - Codex names use `agent: "codex"` and a local Codex slug as `model`. Local slugs are the `slug` values in `~/.codex/models_cache.json`. Normalize case and turn spaces into hyphens: `GPT 5.5` and `gpt 6 sol` become `gpt-5.5` and `gpt-6-sol`. A bare `sol` means the latest model in the sol series. Codex has no `sol` alias, so do not pass `model: "sol"`. Use the newest local slug that ends in `-sol`. When the local slugs are `gpt-6-sol` and `gpt-5.6-sol`, that is `gpt-6-sol`. A name that matches no local slug, such as `gpt-6` when only `gpt-6-sol` and `gpt-6-luna` exist, is ambiguous. Ask which model the user means.
 - An agent name such as "let Claude look" sets `agent` and leaves `model` unset.
+- Rx uses `agent: "rx"`. Use a native `provider/model` ID from the Rx configuration as `model`, such as `tokener/kimi-k3.1`.
 - If the named agent and model belong to different products, do not create the seat. Say they conflict.
 - If the native CLI rejects the model, report that error. Retire the seat and add a new one with the corrected id. The stored model cannot be changed in place.
 
@@ -33,9 +34,9 @@ When choices are open, select seats from the task:
 
 Choose the number of execution seats from the task; there is no default count. Supply a positive `target_size`, explicit `seats`, or both. `target_size` excludes the host. Confer preserves explicit seats and automatically fills remaining positions, preferring agent types other than the host. The same agent, model, and reasoning effort may be used by multiple independent seats. Give seats short unique names and private instructions. Treat one room as one coordination context: add a new seat when a later phase needs another role, and retire a seat only after its delivery finishes and its role is complete.
 
-Pass `"host_agent": "kimi"` for Kimi Code or `"host_agent": "devin"` for Devin for Terminal on create_room: confer's automatic host detection recognizes Claude, Codex, Cursor, Grok, Copilot, and OpenCode markers, while Kimi Code, Antigravity, and Devin expose no equivalent marker, so auto-detection would mislabel those hosts. Pass it explicitly whenever auto-detection may not identify the host.
+Pass `"host_agent": "rx"` for an Rx host, `"host_agent": "kimi"` for Kimi Code, or `"host_agent": "devin"` for Devin for Terminal on create_room: confer's automatic host detection recognizes Claude, Codex, Cursor, Grok, Copilot, and OpenCode markers, while Kimi Code, Antigravity, and Devin expose no equivalent marker, so auto-detection would mislabel those hosts. Pass it explicitly whenever auto-detection may not identify the host.
 
-Kimi Code seats' `reasoning_effort` is thinking (`on` / `low` / `high` / `max`). Devin seats do not accept `reasoning_effort`. OpenCode seats pass `reasoning_effort` through as the model's variant, such as `low` / `high` / `max` / `default`; the selected model must offer the value. Model IDs use the native provider/model format, such as `opencode/big-pickle`.
+Rx seats map `reasoning_effort` to the native `thinking` option (`off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`). The selected model must support that value. Leave model and effort unset to use the current Rx configuration. Kimi Code seats' `reasoning_effort` is thinking (`on` / `low` / `high` / `max`). Devin seats do not accept `reasoning_effort`. OpenCode seats pass `reasoning_effort` through as the model's variant, such as `low` / `high` / `max` / `default`; the selected model must offer the value. Model IDs use the native provider/model format, such as `opencode/big-pickle`.
 
 ## Keep Seats Private
 

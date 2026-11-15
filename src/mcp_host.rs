@@ -97,7 +97,7 @@ fn add_args(host: InstallHost, bin: &str) -> Option<Vec<&str>> {
         }
         AgentKind::Codex | AgentKind::Copilot => vec!["mcp", "add", SERVER_NAME, "--"],
         AgentKind::Agy => vec!["mcp", "add", SERVER_NAME],
-        AgentKind::Cursor | AgentKind::Kimi | AgentKind::Opencode => return None,
+        AgentKind::Cursor | AgentKind::Kimi | AgentKind::Opencode | AgentKind::Rx => return None,
     };
     args.extend([bin, SERVER_ARG]);
     Some(args)
@@ -115,7 +115,7 @@ fn remove_args(host: InstallHost) -> Option<Vec<&'static str>> {
         AgentKind::Codex | AgentKind::Agy | AgentKind::Copilot => {
             vec!["mcp", "remove", SERVER_NAME]
         }
-        AgentKind::Cursor | AgentKind::Kimi | AgentKind::Opencode => return None,
+        AgentKind::Cursor | AgentKind::Kimi | AgentKind::Opencode | AgentKind::Rx => return None,
     })
 }
 
@@ -354,7 +354,12 @@ mod tests {
             );
             assert!(!uses_config_file(InstallHost::Agent(host)));
         }
-        for host in [AgentKind::Cursor, AgentKind::Kimi, AgentKind::Opencode] {
+        for host in [
+            AgentKind::Cursor,
+            AgentKind::Kimi,
+            AgentKind::Opencode,
+            AgentKind::Rx,
+        ] {
             assert!(add_args(InstallHost::Agent(host), "confer").is_none());
             assert!(remove_args(InstallHost::Agent(host)).is_none());
             assert!(uses_config_file(InstallHost::Agent(host)));

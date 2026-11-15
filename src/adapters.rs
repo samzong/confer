@@ -24,6 +24,7 @@ use process::StderrCapture;
 use process::{error_text, reap, redact_secrets, truncate};
 pub(crate) use readiness::{
     check_readiness, find_executable, find_executable_by_names, readiness, resolve_kimi_home,
+    resolve_rx_home,
 };
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
@@ -116,7 +117,8 @@ pub(crate) fn reserve_session(agent: AgentKind) -> Option<String> {
         | AgentKind::Copilot
         | AgentKind::Kimi
         | AgentKind::Devin
-        | AgentKind::Opencode => None,
+        | AgentKind::Opencode
+        | AgentKind::Rx => None,
     }
 }
 
@@ -134,6 +136,7 @@ pub(crate) fn resume_command(
         AgentKind::Copilot => format!("copilot --resume={session}"),
         AgentKind::Kimi => format!("kimi --session {session}"),
         AgentKind::Opencode => format!("opencode --session {session}"),
+        AgentKind::Rx => format!("rxa --resume {session}"),
         AgentKind::Devin => format!("devin --resume {session}"),
         AgentKind::Cursor => return None,
     };
@@ -162,7 +165,8 @@ pub(crate) async fn run(invocation: Invocation) -> AdapterOutput {
         | AgentKind::Cursor
         | AgentKind::Copilot
         | AgentKind::Kimi
-        | AgentKind::Opencode => native::run(invocation).await,
+        | AgentKind::Opencode
+        | AgentKind::Rx => native::run(invocation).await,
         _ => bridge::run(invocation).await,
     };
     cancellation.finish();

@@ -77,6 +77,15 @@ fn apply_native_args(invocation: &Invocation, command: &mut Command) -> Result<(
                     "--mdns=false",
                 ]);
         }
+        AgentKind::Rx => {
+            let rx_home = super::resolve_rx_home(std::env::var_os("RX_HOME"), dirs::home_dir())
+                .map_err(|error| error.to_string())?;
+            command
+                .env("RX_HOME", &rx_home)
+                .env("RX_NO_UPDATE", "1")
+                .env("RX_NO_INSTALL", "1")
+                .arg("acp");
+        }
         _ => return Err("agent has no native ACP transport".into()),
     }
     Ok(())
@@ -86,6 +95,32 @@ fn apply_native_args(invocation: &Invocation, command: &mut Command) -> Result<(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn rx_native_command_pins_home_and_starts_acp_without_prompting_for_installation() {
+        let invocation = Invocation {
+            agent: AgentKind::Rx,
+            executable: PathBuf::from("rxa"),
+            workspace: PathBuf::from("/workspace"),
+            native_session_id: None,
+            model: Some("tokener/kimi-k3.1".into()),
+            reasoning_effort: Some("high".into()),
+            instructions: None,
+            message: "Implement this".into(),
+            first_message: true,
+            cancellation: Default::default(),
+            session_observer: Default::default(),
+        };
+        let mut command = invocation.command();
+        apply_native_args(&invocation, &mut command).unwrap();
+        let debug = format!("{command:?}");
+        assert!(debug.contains("RX_HOME"), "{debug}");
+        assert!(debug.contains("RX_NO_UPDATE=\"1\""), "{debug}");
+        assert!(debug.contains("RX_NO_INSTALL=\"1\""), "{debug}");
+        assert!(debug.contains("\"rxa\" \"acp\""), "{debug}");
+        assert!(!debug.contains("--model"), "{debug}");
+        assert!(!debug.contains("--thinking"), "{debug}");
+    }
 
     #[test]
     fn kimi_native_command_pins_home_and_starts_acp() {
