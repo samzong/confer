@@ -406,12 +406,12 @@ fn rx_installation_uses_agents_skills_and_matches_auto_detection() {
     let custom = dir.path().join("custom-rx");
     std::fs::create_dir(dir.path().join(".rx")).unwrap();
 
-    let variables = [("RX_HOME", custom.to_str().unwrap())];
+    let vars = [("RX_HOME", custom.to_str().unwrap())];
     assert!(
         !run_with_env(
             dir.path(),
             &["skill", "install", "--scope", "user", "--yes"],
-            &variables
+            &vars
         )
         .status
         .success()
@@ -423,36 +423,34 @@ fn rx_installation_uses_agents_skills_and_matches_auto_detection() {
         &[
             "skill", "install", "--agent", "rx", "--scope", "user", "--yes",
         ],
-        &variables,
+        &vars,
     ));
     assert_eq!(
         std::fs::read(dir.path().join(".agents/skills/confer/SKILL.md")).unwrap(),
         include_bytes!("../skills/confer/SKILL.md")
     );
-    assert!(!custom.join("skills").exists());
-    assert!(!dir.path().join(".rx/skills").exists());
+    assert!(!custom.join("skills").exists() && !dir.path().join(".rx/skills").exists());
 
     std::fs::remove_dir_all(dir.path().join(".agents")).unwrap();
-    let bin = dir.path().join("bin");
-    std::fs::create_dir(&bin).unwrap();
-    let rxa = bin.join("rxa");
+    std::fs::create_dir(dir.path().join("bin")).unwrap();
+    let rxa = dir.path().join("bin/rxa");
     std::fs::write(&rxa, "").unwrap();
     std::fs::set_permissions(&rxa, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     success(run_with_env(
         dir.path(),
         &["skill", "install", "--scope", "user", "--yes"],
-        &variables,
+        &vars,
     ));
     assert!(dir.path().join(".agents/skills/confer/SKILL.md").is_file());
 
-    success(run_with_env(dir.path(), &["mcp", "install"], &variables));
+    success(run_with_env(dir.path(), &["mcp", "install"], &vars));
     let auto_mcp = read(&custom.join("mcp.json"));
     std::fs::remove_file(custom.join("mcp.json")).unwrap();
     success(run_with_env(
         dir.path(),
         &["mcp", "install", "--agent", "rx"],
-        &variables,
+        &vars,
     ));
     assert_eq!(auto_mcp, read(&custom.join("mcp.json")));
     assert_eq!(auto_mcp["mcpServers"]["confer"]["type"], "stdio");

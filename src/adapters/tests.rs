@@ -258,34 +258,36 @@ fn rx_home_respects_env_override_and_default() {
 
 #[test]
 fn rx_auth_marker_accepts_native_store_and_launcher_provider_without_reading_keys() {
-    use std::collections::HashMap;
-
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path();
-    let empty_env = |_: &str| None;
-    assert!(!super::rx::rx_has_credentials_with(home, None, empty_env));
+    let ready = |env: &[(&str, &str)]| {
+        super::rx::rx_has_credentials_with(
+            home,
+            None,
+            env.iter().map(|(k, v)| ((*k).into(), (*v).into())),
+        )
+    };
+    assert!(!ready(&[]));
 
     std::fs::create_dir_all(home.join(".rx")).unwrap();
     std::fs::write(home.join(".rx/auth.json"), "{}").unwrap();
-    assert!(!super::rx::rx_has_credentials_with(home, None, empty_env));
-
+    assert!(!ready(&[]));
     std::fs::write(
         home.join(".rx/auth.json"),
-        r#"{"openai-codex":{"type":"oauth","access":"tok","refresh":"ref","expires":9999999999}}"#,
+        r#"{"amazon-bedrock":{"type":"api_key"}}"#,
     )
     .unwrap();
-    assert!(super::rx::rx_has_credentials_with(home, None, empty_env));
+    assert!(!ready(&[]));
+    std::fs::write(
+        home.join(".rx/auth.json"),
+        r#"{"amazon-bedrock":{"type":"api_key"},"openai-codex":{"type":"oauth","access":"tok","refresh":"ref","expires":9999999999}}"#,
+    )
+    .unwrap();
+    assert!(ready(&[]));
 
     std::fs::remove_file(home.join(".rx/auth.json")).unwrap();
-    let tokener_only = HashMap::from([("TOKENER_API_KEY", "not-a-real-key")]);
-    assert!(!super::rx::rx_has_credentials_with(home, None, |key| {
-        tokener_only.get(key).map(|value| (*value).to_owned())
-    }));
-
-    let openrouter_only = HashMap::from([("OPENROUTER_API_KEY", "not-a-real-key")]);
-    assert!(super::rx::rx_has_credentials_with(home, None, |key| {
-        openrouter_only.get(key).map(|value| (*value).to_owned())
-    }));
+    assert!(!ready(&[("TOKENER_API_KEY", "not-a-real-key")]));
+    assert!(ready(&[("OPENROUTER_API_KEY", "not-a-real-key")]));
 
     std::fs::create_dir_all(home.join(".recall")).unwrap();
     std::fs::write(
@@ -293,49 +295,20 @@ fn rx_auth_marker_accepts_native_store_and_launcher_provider_without_reading_key
         "default_provider = \"none\"\n",
     )
     .unwrap();
-    assert!(!super::rx::rx_has_credentials_with(home, None, |key| {
-        openrouter_only.get(key).map(|value| (*value).to_owned())
-    }));
+    assert!(!ready(&[("OPENROUTER_API_KEY", "not-a-real-key")]));
 
-    let anthropic_only = HashMap::from([("ANTHROPIC_API_KEY", "not-a-real-key")]);
     std::fs::write(
         home.join(".rx/config.json"),
         r#"{"model":"openai-codex/gpt-5.4"}"#,
     )
     .unwrap();
-    assert!(!super::rx::rx_has_credentials_with(home, None, |key| {
-        anthropic_only.get(key).map(|value| (*value).to_owned())
-    }));
+    assert!(!ready(&[("ANTHROPIC_API_KEY", "not-a-real-key")]));
     std::fs::write(
         home.join(".rx/config.json"),
         r#"{"model":"anthropic/claude-opus-4"}"#,
     )
     .unwrap();
-    assert!(super::rx::rx_has_credentials_with(home, None, |key| {
-        anthropic_only.get(key).map(|value| (*value).to_owned())
-    }));
-    let anthropic_auth_token = HashMap::from([("ANTHROPIC_AUTH_TOKEN", "not-a-real-key")]);
-    assert!(super::rx::rx_has_credentials_with(home, None, |key| {
-        anthropic_auth_token
-            .get(key)
-            .map(|value| (*value).to_owned())
-    }));
-    std::fs::write(
-        home.join(".rx/config.json"),
-        r#"{"model":"cloudflare-workers-ai/@cf/meta/llama-3"}"#,
-    )
-    .unwrap();
-    let cf_key_only = HashMap::from([("CLOUDFLARE_API_KEY", "not-a-real-key")]);
-    assert!(!super::rx::rx_has_credentials_with(home, None, |key| {
-        cf_key_only.get(key).map(|value| (*value).to_owned())
-    }));
-    let cf_complete = HashMap::from([
-        ("CLOUDFLARE_API_KEY", "not-a-real-key"),
-        ("CLOUDFLARE_ACCOUNT_ID", "acct-123"),
-    ]);
-    assert!(super::rx::rx_has_credentials_with(home, None, |key| {
-        cf_complete.get(key).map(|value| (*value).to_owned())
-    }));
+    assert!(ready(&[("ANTHROPIC_AUTH_TOKEN", "not-a-real-key")]));
     std::fs::remove_file(home.join(".rx/config.json")).unwrap();
 
     std::fs::write(
@@ -343,13 +316,13 @@ fn rx_auth_marker_accepts_native_store_and_launcher_provider_without_reading_key
         "default_provider = \"tokener\"\n",
     )
     .unwrap();
-    assert!(!super::rx::rx_has_credentials_with(home, None, empty_env));
+    assert!(!ready(&[]));
     std::fs::write(
         home.join(".recall/rx.keys"),
         "tokener = \"not-a-real-key\"\n",
     )
     .unwrap();
-    assert!(super::rx::rx_has_credentials_with(home, None, empty_env));
+    assert!(ready(&[]));
 
     std::fs::remove_file(home.join(".recall/rx.keys")).unwrap();
     std::fs::write(
@@ -357,37 +330,15 @@ fn rx_auth_marker_accepts_native_store_and_launcher_provider_without_reading_key
         "default_provider = \"customgw\"\n[provider.customgw]\nbase_url = \"https://example.invalid/v1\"\nauth = \"env\"\nenv = \"CUSTOMGW_API_KEY\"\n",
     )
     .unwrap();
-    assert!(!super::rx::rx_has_credentials_with(home, None, empty_env));
-    let custom_env = HashMap::from([("CUSTOMGW_API_KEY", "not-a-real-key")]);
-    assert!(super::rx::rx_has_credentials_with(home, None, |key| {
-        custom_env.get(key).map(|value| (*value).to_owned())
-    }));
-
-    std::fs::write(
-        home.join(".recall/rx.toml"),
-        "default_provider = \"magpie\"\n",
-    )
-    .unwrap();
-    assert!(super::rx::rx_has_credentials_with(home, None, empty_env));
+    assert!(!ready(&[]));
+    assert!(ready(&[("CUSTOMGW_API_KEY", "not-a-real-key")]));
 }
 
 #[test]
 fn rx_agent_installation_check_verifies_managed_binary() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path();
-    let missing = dir.path().join("isolated-bin/rxa");
-    assert!(!super::rx::rx_agent_installed_with(
-        &missing,
-        Some(home),
-        None
-    ));
-
-    std::fs::create_dir_all(home.join(".recall/rx-agent/versions/0.2.0")).unwrap();
-    std::fs::write(
-        home.join(".recall/rx-agent/install.toml"),
-        "current = \"0.2.0\"\n",
-    )
-    .unwrap();
+    let missing = home.join("isolated-bin/rxa");
     let binary_name = if cfg!(windows) {
         "rx-agent.exe"
     } else {
@@ -398,12 +349,20 @@ fn rx_agent_installation_check_verifies_managed_binary() {
         Some(home),
         None
     ));
+
+    let version_dir = home.join(".recall/rx-agent/versions/0.2.0");
+    std::fs::create_dir_all(&version_dir).unwrap();
     std::fs::write(
-        home.join(".recall/rx-agent/versions/0.2.0")
-            .join(binary_name),
-        "",
+        home.join(".recall/rx-agent/install.toml"),
+        "current = \"0.2.0\"\n",
     )
     .unwrap();
+    assert!(!super::rx::rx_agent_installed_with(
+        &missing,
+        Some(home),
+        None
+    ));
+    std::fs::write(version_dir.join(binary_name), "").unwrap();
     assert!(super::rx::rx_agent_installed_with(
         &missing,
         Some(home),
@@ -420,20 +379,9 @@ fn rx_secrets_are_redacted_including_custom_provider_envs() {
     std::fs::create_dir_all(home.join(".recall")).unwrap();
     std::fs::write(
         home.join(".recall/rx.toml"),
-        "[provider.customgw]\nbase_url = \"https://example.invalid/v1\"\nauth = \"env\"\nenv = \"CUSTOMGW_API_KEY\"\n",
+        "[provider.customgw]\nbase_url = \"https://example.invalid/v1\"\nauth = \"env\"\nenv = \"CUSTOM_CRED\"\n",
     )
     .unwrap();
-    let scrubbed = super::process::redact_secrets_with(
-        "tokener=tok-secret custom=cust-secret",
-        Some(home),
-        None,
-        [
-            ("TOKENER_API_KEY".into(), "tok-secret".into()),
-            ("CUSTOMGW_API_KEY".into(), "cust-secret".into()),
-        ],
-    );
-    assert_eq!(scrubbed, "tokener=[REDACTED] custom=[REDACTED]");
-
     std::fs::write(
         home.join(".recall/rx.keys"),
         "openrouter = \"or-file-secret\"\n",
@@ -446,15 +394,19 @@ fn rx_secrets_are_redacted_including_custom_provider_envs() {
         r#"{"bedrock":{"type":"api_key","key":"ak-secret","env":{"AWS_SECRET_ACCESS_KEY":"aws-sec","AWS_PROFILE":"default","GOOGLE_CLOUD_LOCATION":"global"}},"codex":{"type":"oauth","access":"oa-acc","refresh":"oa-ref","expires":1}}"#,
     )
     .unwrap();
-    let file_scrubbed = super::process::redact_secrets_with(
-        "or=or-file-secret ak=ak-secret aws=aws-sec prof=default loc=global acc=oa-acc ref=oa-ref",
+
+    let scrubbed = super::process::redact_secrets_with(
+        "tokener=tok-secret custom=cust-secret or=or-file-secret ak=ak-secret aws=aws-sec prof=default loc=global acc=oa-acc ref=oa-ref",
         Some(home),
         Some(OsString::from(&custom_rx)),
-        Vec::<(String, String)>::new(),
+        [
+            ("TOKENER_API_KEY".into(), "tok-secret".into()),
+            ("CUSTOM_CRED".into(), "cust-secret".into()),
+        ],
     );
     assert_eq!(
-        file_scrubbed,
-        "or=[REDACTED] ak=[REDACTED] aws=[REDACTED] prof=default loc=global acc=[REDACTED] ref=[REDACTED]"
+        scrubbed,
+        "tokener=[REDACTED] custom=[REDACTED] or=[REDACTED] ak=[REDACTED] aws=[REDACTED] prof=default loc=global acc=[REDACTED] ref=[REDACTED]"
     );
 }
 

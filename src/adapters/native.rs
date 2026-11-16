@@ -94,9 +94,8 @@ mod tests {
     fn rx_native_command_pins_home_and_starts_acp_without_prompting_for_installation() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
-        let rx_home = home.join(".rx");
         std::fs::create_dir_all(home.join(".recall")).unwrap();
-        std::fs::create_dir_all(&rx_home).unwrap();
+        std::fs::create_dir_all(home.join(".rx")).unwrap();
         std::fs::write(
             home.join(".recall/rx.toml"),
             "default_provider = \"tokener\"\n",
@@ -108,27 +107,38 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            rx_home.join("auth.json"),
+            home.join(".rx/auth.json"),
             r#"{"openai-codex":{"type":"oauth","access":"a","refresh":"r","expires":1}}"#,
         )
         .unwrap();
 
-        let base = Invocation {
-            agent: AgentKind::Rx,
-            executable: PathBuf::from("rxa"),
-            workspace: PathBuf::from("/workspace"),
-            native_session_id: None,
-            model: None,
-            reasoning_effort: Some("high".into()),
-            instructions: None,
-            message: "Implement this".into(),
-            first_message: true,
-            cancellation: Default::default(),
-            session_observer: Default::default(),
-        };
-        let mut command = base.command();
-        super::super::rx::apply_native_args_with(&base, &mut command, Some(home), None, |_| None)
+        let build = |model: Option<&str>, env: &[(&str, &str)]| {
+            let invocation = Invocation {
+                agent: AgentKind::Rx,
+                executable: PathBuf::from("rxa"),
+                workspace: PathBuf::from("/workspace"),
+                native_session_id: None,
+                model: model.map(str::to_owned),
+                reasoning_effort: Some("high".into()),
+                instructions: None,
+                message: "Implement this".into(),
+                first_message: true,
+                cancellation: Default::default(),
+                session_observer: Default::default(),
+            };
+            let mut command = invocation.command();
+            super::super::rx::apply_native_args_with(
+                &invocation,
+                &mut command,
+                Some(home),
+                None,
+                env.iter().map(|(k, v)| ((*k).into(), (*v).into())),
+            )
             .unwrap();
+            command
+        };
+
+        let command = build(None, &[]);
         let debug = format!("{command:?}");
         assert!(debug.contains("RX_HOME"), "{debug}");
         assert!(debug.contains("RX_NO_UPDATE=\"1\""), "{debug}");
@@ -139,58 +149,33 @@ mod tests {
         let envs = command
             .as_std()
             .get_envs()
-            .map(|(k, v)| {
-                (
-                    k.to_string_lossy().into_owned(),
-                    v.map(|s| s.to_string_lossy().into_owned()),
-                )
-            })
+            .map(|(k, v)| (k.to_string_lossy().into_owned(), v.is_some()))
             .collect::<Vec<_>>();
-        assert!(
-            envs.contains(&("RX_AGENT_PROVIDER".into(), None)),
-            "{envs:?}"
-        );
-        assert!(envs.contains(&("RX_HOST_REQUEST".into(), None)), "{envs:?}");
-        assert!(envs.contains(&("RX_NO_YOLO".into(), None)), "{envs:?}");
+        for stripped in ["RX_AGENT_PROVIDER", "RX_HOST_REQUEST", "RX_NO_YOLO"] {
+            assert!(envs.contains(&(stripped.into(), false)), "{envs:?}");
+        }
 
-        let launcher_model = Invocation {
-            model: Some("tokener/kimi-k3.1".into()),
-            ..base.clone()
-        };
-        let mut command = launcher_model.command();
-        super::super::rx::apply_native_args_with(
-            &launcher_model,
-            &mut command,
-            Some(home),
-            None,
-            |_| None,
-        )
-        .unwrap();
-        let debug = format!("{command:?}");
-        assert!(
-            debug.contains("\"--provider\" \"tokener\" \"acp\" \"--model\" \"tokener/kimi-k3.1\""),
-            "{debug}"
-        );
-        assert!(!debug.contains("--thinking"), "{debug}");
-
-        let native_model = Invocation {
-            model: Some("openai-codex/gpt-5.4".into()),
-            ..base
-        };
-        let mut command = native_model.command();
-        super::super::rx::apply_native_args_with(
-            &native_model,
-            &mut command,
-            Some(home),
-            None,
-            |_| None,
-        )
-        .unwrap();
-        let debug = format!("{command:?}");
-        assert!(
-            debug.contains("\"--provider\" \"none\" \"acp\" \"--model\" \"openai-codex/gpt-5.4\""),
-            "{debug}"
-        );
+        for (model, env, expected) in [
+            (
+                "tokener/kimi-k3.1",
+                &[][..],
+                "\"--provider\" \"tokener\" \"acp\" \"--model\" \"tokener/kimi-k3.1\"",
+            ),
+            (
+                "openai-codex/gpt-5.4",
+                &[][..],
+                "\"--provider\" \"none\" \"acp\" \"--model\" \"openai-codex/gpt-5.4\"",
+            ),
+            (
+                "anthropic/claude-opus-4",
+                &[("ANTHROPIC_API_KEY", "not-a-real-key")][..],
+                "\"--provider\" \"none\" \"acp\" \"--model\" \"anthropic/claude-opus-4\"",
+            ),
+        ] {
+            let debug = format!("{:?}", build(Some(model), env));
+            assert!(debug.contains(expected), "{debug}");
+            assert!(!debug.contains("--thinking"), "{debug}");
+        }
     }
 
     #[test]

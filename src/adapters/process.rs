@@ -291,22 +291,7 @@ pub(super) fn redact_secrets_with(
     let env_map = env_vars
         .into_iter()
         .collect::<std::collections::HashMap<_, _>>();
-    let mut secrets = [
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "CURSOR_API_KEY",
-        "XAI_API_KEY",
-        "COPILOT_GITHUB_TOKEN",
-        "GH_TOKEN",
-        "GITHUB_TOKEN",
-        "COPILOT_PROVIDER_API_KEY",
-        "COPILOT_PROVIDER_BEARER_TOKEN",
-        "WINDSURF_API_KEY",
-    ]
-    .into_iter()
-    .filter_map(|name| env_map.get(name).cloned())
-    .collect::<Vec<_>>();
-    secrets.extend(super::rx::collect_secrets(home, rx_home_override, &env_map));
+    let mut secrets = super::rx::collect_secrets(home, rx_home_override, &env_map);
     secrets.retain(|secret| !secret.is_empty());
     secrets.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
     secrets.dedup();
