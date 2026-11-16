@@ -12,6 +12,7 @@ mod devin;
 mod native;
 mod process;
 mod readiness;
+mod rx;
 #[cfg(test)]
 mod tests;
 
@@ -24,8 +25,8 @@ use process::StderrCapture;
 use process::{error_text, reap, redact_secrets, truncate};
 pub(crate) use readiness::{
     check_readiness, find_executable, find_executable_by_names, readiness, resolve_kimi_home,
-    resolve_rx_home,
 };
+pub(crate) use rx::resolve_rx_home;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 

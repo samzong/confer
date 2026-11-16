@@ -12,7 +12,6 @@ pub(crate) enum InstallHost {
     Droid,
     Qoder,
     Kiro,
-    RxHost,
 }
 
 impl InstallHost {
@@ -39,7 +38,6 @@ impl InstallHost {
             "droid" | "factory-droid" => Some(Self::Droid),
             "qoder" | "qoder-cli" => Some(Self::Qoder),
             "kiro" | "kiro-cli" => Some(Self::Kiro),
-            "rx" | "rxa" | "rx-agent" => Some(Self::RxHost),
             _ => AgentKind::parse(value).map(Self::Agent),
         }
     }
@@ -52,7 +50,6 @@ impl InstallHost {
             Self::Droid => "droid",
             Self::Qoder => "qoder",
             Self::Kiro => "kiro",
-            Self::RxHost => "rx",
         }
     }
 
@@ -64,14 +61,12 @@ impl InstallHost {
             Self::Droid => "droid",
             Self::Qoder => "qoder",
             Self::Kiro => "kiro-cli",
-            Self::RxHost => "rx-agent",
         }
     }
 
     pub(crate) fn program(self) -> Option<String> {
         match self {
             Self::Agent(agent) => crate::adapters::find_executable(agent),
-            Self::RxHost => crate::adapters::find_executable(AgentKind::Rx),
             Self::GeminiCli => crate::adapters::find_executable_by_names(&["gemini"]),
             Self::Qwen => crate::adapters::find_executable_by_names(&["qwen"]),
             Self::Droid => crate::adapters::find_executable_by_names(&["droid"]),
@@ -82,7 +77,7 @@ impl InstallHost {
     }
 
     pub(crate) fn skill_auto_detection(self, scope: kitup::Scope) -> Result<Option<bool>> {
-        if matches!(self, Self::GeminiCli | Self::RxHost) {
+        if matches!(self, Self::GeminiCli | Self::Agent(AgentKind::Rx)) {
             return Ok(Some(self.program().is_some()));
         }
         if scope == kitup::Scope::User
@@ -100,11 +95,10 @@ impl InstallHost {
         Ok(None)
     }
 
-    const SKILL_DIRECTORY_OVERRIDES: [(Self, &'static str); 4] = [
+    const SKILL_DIRECTORY_OVERRIDES: [(Self, &'static str); 3] = [
         (Self::GeminiCli, "GEMINI_CLI_HOME"),
         (Self::Qwen, "QWEN_HOME"),
         (Self::Qoder, "QODER_CONFIG_DIR"),
-        (Self::RxHost, "RX_HOME"),
     ];
 
     pub(crate) fn config_path(self) -> Result<PathBuf> {
@@ -116,7 +110,7 @@ impl InstallHost {
                 dirs::home_dir(),
             )?
             .join("mcp.json")),
-            Self::Agent(AgentKind::Rx) | Self::RxHost => Ok(crate::adapters::resolve_rx_home(
+            Self::Agent(AgentKind::Rx) => Ok(crate::adapters::resolve_rx_home(
                 std::env::var_os("RX_HOME"),
                 dirs::home_dir(),
             )?
@@ -177,7 +171,7 @@ pub(crate) fn skill_hosts_file(
             display_name: "Rx".into(),
             aliases: vec!["rx".into(), "rxa".into()],
             project_skills_dirs: vec![".agents/skills".into()],
-            user_skills_dirs: vec!["~/.rx/skills".into()],
+            user_skills_dirs: vec!["~/.agents/skills".into()],
             detect: vec!["~/.rx".into()],
             status: "community".into(),
             notes: Vec::new(),

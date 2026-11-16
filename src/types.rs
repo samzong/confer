@@ -57,7 +57,7 @@ impl AgentKind {
             "kimi" | "kimi-code" | "kimi-code-cli" | "kimi-cli" => Some(Self::Kimi),
             "devin" | "devin-cli" => Some(Self::Devin),
             "opencode" | "opencode-cli" => Some(Self::Opencode),
-            "rx" | "rxa" => Some(Self::Rx),
+            "rx" | "rxa" | "rx-agent" => Some(Self::Rx),
             _ => None,
         }
     }

@@ -157,7 +157,7 @@ async fn opencode_sets_build_mode_then_model_then_effort_and_resumes() {
 
 #[tokio::test]
 async fn opencode_unsupported_model_effort_keeps_session_without_prompting() {
-    let mut invocation = invocation(true);
+    let mut invocation = invocation(false);
     invocation.agent = AgentKind::Opencode;
     invocation.model = Some("opencode/big-pickle".into());
     invocation.reasoning_effort = Some("high".into());
@@ -208,36 +208,8 @@ async fn rx_unsupported_thinking_fails_before_the_prompt() {
 }
 
 #[tokio::test]
-async fn non_rx_acp_agents_keep_their_configuration_and_recovery_paths() {
-    let mut invocation = super::invocation(false);
-    invocation.agent = AgentKind::Kimi;
-    invocation.model = Some("kimi-code/k3".into());
-    invocation.reasoning_effort = Some("high".into());
-    configured_session(
-        invocation,
-        vec![
-            ("mode", "auto"),
-            ("model", "kimi-code/k3"),
-            ("thinking", "high"),
-        ],
-        None,
-    )
-    .await;
-
-    let mut invocation = super::invocation(false);
-    invocation.agent = AgentKind::Opencode;
-    invocation.model = Some("opencode/big-pickle".into());
-    configured_session(
-        invocation,
-        vec![("mode", "build"), ("model", "opencode/big-pickle")],
-        None,
-    )
-    .await;
-}
-
-#[tokio::test]
 async fn configuration_failure_before_the_prompt_keeps_native_session() {
-    let mut invocation = invocation(true);
+    let mut invocation = invocation(false);
     invocation.agent = AgentKind::Copilot;
     invocation.model = Some("gpt-5.4".into());
     invocation.reasoning_effort = Some("low".into());

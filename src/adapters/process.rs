@@ -1,4 +1,5 @@
 use super::Invocation;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncReadExt;
@@ -270,8 +271,18 @@ pub(super) fn error_text(prefix: &str, stderr: &str, stdout: &str) -> String {
 }
 
 pub(super) fn redact_secrets(value: &str) -> String {
-    let mut redacted = value.to_string();
-    for name in [
+    redact_secrets_with(value, dirs::home_dir().as_deref(), std::env::vars())
+}
+
+pub(super) fn redact_secrets_with(
+    value: &str,
+    home: Option<&Path>,
+    env_vars: impl IntoIterator<Item = (String, String)>,
+) -> String {
+    let env_map = env_vars
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut names = [
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "CURSOR_API_KEY",
@@ -282,12 +293,21 @@ pub(super) fn redact_secrets(value: &str) -> String {
         "COPILOT_PROVIDER_API_KEY",
         "COPILOT_PROVIDER_BEARER_TOKEN",
         "WINDSURF_API_KEY",
-    ] {
-        if let Ok(secret) = std::env::var(name)
-            && !secret.is_empty()
-        {
-            redacted = redacted.replace(&secret, "[REDACTED]");
-        }
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    names.extend(super::rx::secret_env_names(home, env_map.keys().cloned()));
+    let mut secrets = names
+        .into_iter()
+        .filter_map(|name| env_map.get(&name).cloned())
+        .filter(|secret| !secret.is_empty())
+        .collect::<Vec<_>>();
+    secrets.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
+    secrets.dedup();
+    let mut redacted = value.to_string();
+    for secret in secrets {
+        redacted = redacted.replace(&secret, "[REDACTED]");
     }
     redacted
 }

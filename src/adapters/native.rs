@@ -78,13 +78,7 @@ fn apply_native_args(invocation: &Invocation, command: &mut Command) -> Result<(
                 ]);
         }
         AgentKind::Rx => {
-            let rx_home = super::resolve_rx_home(std::env::var_os("RX_HOME"), dirs::home_dir())
-                .map_err(|error| error.to_string())?;
-            command
-                .env("RX_HOME", &rx_home)
-                .env("RX_NO_UPDATE", "1")
-                .env("RX_NO_INSTALL", "1")
-                .arg("acp");
+            super::rx::apply_native_args(invocation, command, dirs::home_dir().as_deref())?;
         }
         _ => return Err("agent has no native ACP transport".into()),
     }
@@ -98,12 +92,33 @@ mod tests {
 
     #[test]
     fn rx_native_command_pins_home_and_starts_acp_without_prompting_for_installation() {
-        let invocation = Invocation {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let rx_home = home.join(".rx");
+        std::fs::create_dir_all(home.join(".recall")).unwrap();
+        std::fs::create_dir_all(&rx_home).unwrap();
+        std::fs::write(
+            home.join(".recall/rx.toml"),
+            "default_provider = \"tokener\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            home.join(".recall/rx.keys"),
+            "tokener = \"not-a-real-key\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            rx_home.join("auth.json"),
+            r#"{"openai-codex":{"type":"oauth","access":"a","refresh":"r","expires":1}}"#,
+        )
+        .unwrap();
+
+        let base = Invocation {
             agent: AgentKind::Rx,
             executable: PathBuf::from("rxa"),
             workspace: PathBuf::from("/workspace"),
             native_session_id: None,
-            model: Some("tokener/kimi-k3.1".into()),
+            model: None,
             reasoning_effort: Some("high".into()),
             instructions: None,
             message: "Implement this".into(),
@@ -111,8 +126,9 @@ mod tests {
             cancellation: Default::default(),
             session_observer: Default::default(),
         };
-        let mut command = invocation.command();
-        apply_native_args(&invocation, &mut command).unwrap();
+        let mut command = base.command();
+        super::super::rx::apply_native_args_with(&base, &mut command, Some(home), None, |_| None)
+            .unwrap();
         let debug = format!("{command:?}");
         assert!(debug.contains("RX_HOME"), "{debug}");
         assert!(debug.contains("RX_NO_UPDATE=\"1\""), "{debug}");
@@ -120,6 +136,45 @@ mod tests {
         assert!(debug.contains("\"rxa\" \"acp\""), "{debug}");
         assert!(!debug.contains("--model"), "{debug}");
         assert!(!debug.contains("--thinking"), "{debug}");
+
+        let launcher_model = Invocation {
+            model: Some("tokener/kimi-k3.1".into()),
+            ..base.clone()
+        };
+        let mut command = launcher_model.command();
+        super::super::rx::apply_native_args_with(
+            &launcher_model,
+            &mut command,
+            Some(home),
+            None,
+            |_| None,
+        )
+        .unwrap();
+        let debug = format!("{command:?}");
+        assert!(
+            debug.contains("\"--provider\" \"tokener\" \"acp\" \"--model\" \"tokener/kimi-k3.1\""),
+            "{debug}"
+        );
+        assert!(!debug.contains("--thinking"), "{debug}");
+
+        let native_model = Invocation {
+            model: Some("openai-codex/gpt-5.4".into()),
+            ..base
+        };
+        let mut command = native_model.command();
+        super::super::rx::apply_native_args_with(
+            &native_model,
+            &mut command,
+            Some(home),
+            None,
+            |_| None,
+        )
+        .unwrap();
+        let debug = format!("{command:?}");
+        assert!(
+            debug.contains("\"--provider\" \"none\" \"acp\" \"--model\" \"openai-codex/gpt-5.4\""),
+            "{debug}"
+        );
     }
 
     #[test]

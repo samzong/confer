@@ -258,26 +258,156 @@ fn rx_home_respects_env_override_and_default() {
 
 #[test]
 fn rx_auth_marker_accepts_native_store_and_launcher_provider_without_reading_keys() {
+    use std::collections::HashMap;
+
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path();
-    assert!(!super::readiness::rx_has_credentials(home));
+    let empty_env = |_: &str| None;
+    assert!(!super::rx::rx_has_credentials_with(home, None, empty_env));
+
     std::fs::create_dir_all(home.join(".rx")).unwrap();
     std::fs::write(home.join(".rx/auth.json"), "{}").unwrap();
-    assert!(super::readiness::rx_has_credentials(home));
+    assert!(!super::rx::rx_has_credentials_with(home, None, empty_env));
+
+    std::fs::write(
+        home.join(".rx/auth.json"),
+        r#"{"openai-codex":{"type":"oauth","access":"tok","refresh":"ref","expires":9999999999}}"#,
+    )
+    .unwrap();
+    assert!(super::rx::rx_has_credentials_with(home, None, empty_env));
+
     std::fs::remove_file(home.join(".rx/auth.json")).unwrap();
+    let tokener_only = HashMap::from([("TOKENER_API_KEY", "not-a-real-key")]);
+    assert!(!super::rx::rx_has_credentials_with(home, None, |key| {
+        tokener_only.get(key).map(|value| (*value).to_owned())
+    }));
+
+    let openrouter_only = HashMap::from([("OPENROUTER_API_KEY", "not-a-real-key")]);
+    assert!(super::rx::rx_has_credentials_with(home, None, |key| {
+        openrouter_only.get(key).map(|value| (*value).to_owned())
+    }));
+
     std::fs::create_dir_all(home.join(".recall")).unwrap();
+    std::fs::write(
+        home.join(".recall/rx.toml"),
+        "default_provider = \"none\"\n",
+    )
+    .unwrap();
+    assert!(!super::rx::rx_has_credentials_with(home, None, |key| {
+        openrouter_only.get(key).map(|value| (*value).to_owned())
+    }));
+
+    let anthropic_only = HashMap::from([("ANTHROPIC_API_KEY", "not-a-real-key")]);
+    std::fs::write(
+        home.join(".rx/config.json"),
+        r#"{"model":"openai-codex/gpt-5.4"}"#,
+    )
+    .unwrap();
+    assert!(!super::rx::rx_has_credentials_with(home, None, |key| {
+        anthropic_only.get(key).map(|value| (*value).to_owned())
+    }));
+    std::fs::write(
+        home.join(".rx/config.json"),
+        r#"{"model":"anthropic/claude-opus-4"}"#,
+    )
+    .unwrap();
+    assert!(super::rx::rx_has_credentials_with(home, None, |key| {
+        anthropic_only.get(key).map(|value| (*value).to_owned())
+    }));
+    std::fs::remove_file(home.join(".rx/config.json")).unwrap();
+
     std::fs::write(
         home.join(".recall/rx.toml"),
         "default_provider = \"tokener\"\n",
     )
     .unwrap();
-    assert!(!super::readiness::rx_has_credentials(home));
+    assert!(!super::rx::rx_has_credentials_with(home, None, empty_env));
     std::fs::write(
         home.join(".recall/rx.keys"),
         "tokener = \"not-a-real-key\"\n",
     )
     .unwrap();
-    assert!(super::readiness::rx_has_credentials(home));
+    assert!(super::rx::rx_has_credentials_with(home, None, empty_env));
+
+    std::fs::remove_file(home.join(".recall/rx.keys")).unwrap();
+    std::fs::write(
+        home.join(".recall/rx.toml"),
+        "default_provider = \"customgw\"\n[provider.customgw]\nbase_url = \"https://example.invalid/v1\"\nauth = \"env\"\nenv = \"CUSTOMGW_API_KEY\"\n",
+    )
+    .unwrap();
+    assert!(!super::rx::rx_has_credentials_with(home, None, empty_env));
+    let custom_env = HashMap::from([("CUSTOMGW_API_KEY", "not-a-real-key")]);
+    assert!(super::rx::rx_has_credentials_with(home, None, |key| {
+        custom_env.get(key).map(|value| (*value).to_owned())
+    }));
+
+    std::fs::write(
+        home.join(".recall/rx.toml"),
+        "default_provider = \"magpie\"\n",
+    )
+    .unwrap();
+    assert!(super::rx::rx_has_credentials_with(home, None, empty_env));
+}
+
+#[test]
+fn rx_agent_installation_check_verifies_managed_binary() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let missing = dir.path().join("isolated-bin/rxa");
+    assert!(!super::rx::rx_agent_installed_with(
+        &missing,
+        Some(home),
+        None
+    ));
+
+    std::fs::create_dir_all(home.join(".recall/rx-agent/versions/0.2.0")).unwrap();
+    std::fs::write(
+        home.join(".recall/rx-agent/install.toml"),
+        "current = \"0.2.0\"\n",
+    )
+    .unwrap();
+    let binary_name = if cfg!(windows) {
+        "rx-agent.exe"
+    } else {
+        "rx-agent"
+    };
+    assert!(!super::rx::rx_agent_installed_with(
+        &missing,
+        Some(home),
+        None
+    ));
+    std::fs::write(
+        home.join(".recall/rx-agent/versions/0.2.0")
+            .join(binary_name),
+        "",
+    )
+    .unwrap();
+    assert!(super::rx::rx_agent_installed_with(
+        &missing,
+        Some(home),
+        None
+    ));
+}
+
+#[test]
+fn rx_secrets_are_redacted_including_custom_provider_envs() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    std::fs::create_dir_all(home.join(".recall")).unwrap();
+    std::fs::write(
+        home.join(".recall/rx.toml"),
+        "[provider.customgw]\nbase_url = \"https://example.invalid/v1\"\nauth = \"env\"\nenv = \"CUSTOMGW_API_KEY\"\n",
+    )
+    .unwrap();
+    let scrubbed = super::process::redact_secrets_with(
+        "tokener=tok-secret custom=cust-secret",
+        Some(home),
+        [
+            ("TOKENER_API_KEY".into(), "tok-secret".into()),
+            ("CUSTOMGW_API_KEY".into(), "cust-secret".into()),
+        ],
+    );
+    assert_eq!(scrubbed, "tokener=[REDACTED] custom=[REDACTED]");
 }
 
 #[test]
