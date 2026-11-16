@@ -391,6 +391,8 @@ fn rx_agent_installation_check_verifies_managed_binary() {
 
 #[test]
 fn rx_secrets_are_redacted_including_custom_provider_envs() {
+    use std::ffi::OsString;
+
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path();
     std::fs::create_dir_all(home.join(".recall")).unwrap();
@@ -402,12 +404,36 @@ fn rx_secrets_are_redacted_including_custom_provider_envs() {
     let scrubbed = super::process::redact_secrets_with(
         "tokener=tok-secret custom=cust-secret",
         Some(home),
+        None,
         [
             ("TOKENER_API_KEY".into(), "tok-secret".into()),
             ("CUSTOMGW_API_KEY".into(), "cust-secret".into()),
         ],
     );
     assert_eq!(scrubbed, "tokener=[REDACTED] custom=[REDACTED]");
+
+    std::fs::write(
+        home.join(".recall/rx.keys"),
+        "openrouter = \"or-file-secret\"\n",
+    )
+    .unwrap();
+    let custom_rx = home.join("custom-rx");
+    std::fs::create_dir_all(&custom_rx).unwrap();
+    std::fs::write(
+        custom_rx.join("auth.json"),
+        r#"{"bedrock":{"type":"api_key","key":"ak-secret","env":{"AWS_SECRET_ACCESS_KEY":"aws-sec","AWS_PROFILE":"default","GOOGLE_CLOUD_LOCATION":"global"}},"codex":{"type":"oauth","access":"oa-acc","refresh":"oa-ref","expires":1}}"#,
+    )
+    .unwrap();
+    let file_scrubbed = super::process::redact_secrets_with(
+        "or=or-file-secret ak=ak-secret aws=aws-sec prof=default loc=global acc=oa-acc ref=oa-ref",
+        Some(home),
+        Some(OsString::from(&custom_rx)),
+        Vec::<(String, String)>::new(),
+    );
+    assert_eq!(
+        file_scrubbed,
+        "or=[REDACTED] ak=[REDACTED] aws=[REDACTED] prof=default loc=global acc=[REDACTED] ref=[REDACTED]"
+    );
 }
 
 #[test]

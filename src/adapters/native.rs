@@ -136,6 +136,22 @@ mod tests {
         assert!(debug.contains("\"rxa\" \"acp\""), "{debug}");
         assert!(!debug.contains("--model"), "{debug}");
         assert!(!debug.contains("--thinking"), "{debug}");
+        let envs = command
+            .as_std()
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|s| s.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            envs.contains(&("RX_AGENT_PROVIDER".into(), None)),
+            "{envs:?}"
+        );
+        assert!(envs.contains(&("RX_HOST_REQUEST".into(), None)), "{envs:?}");
+        assert!(envs.contains(&("RX_NO_YOLO".into(), None)), "{envs:?}");
 
         let launcher_model = Invocation {
             model: Some("tokener/kimi-k3.1".into()),

@@ -9,104 +9,14 @@ use tokio::process::Command;
 
 use super::Invocation;
 
-const RX_BUNDLED_PROVIDERS: &[(&str, &str)] = &[
-    ("openrouter", "OPENROUTER_API_KEY"),
-    ("tokener", "TOKENER_API_KEY"),
-    ("abacus", "ABACUS_API_KEY"),
-    ("alibaba", "DASHSCOPE_API_KEY"),
-    ("alibaba-cn", "DASHSCOPE_API_KEY"),
-    ("alibaba-coding-plan", "ALIBABA_CODING_PLAN_API_KEY"),
-    ("alibaba-coding-plan-cn", "ALIBABA_CODING_PLAN_API_KEY"),
-    ("alibaba-token-plan", "ALIBABA_TOKEN_PLAN_API_KEY"),
-    ("alibaba-token-plan-cn", "ALIBABA_TOKEN_PLAN_API_KEY"),
-    ("ambient", "AMBIENT_API_KEY"),
-    ("cortecs", "CORTECS_API_KEY"),
-    ("deepseek", "DEEPSEEK_API_KEY"),
-    ("echo", "ECHO_API_KEY"),
-    ("empiriolabs", "EMPIRIOLABS_API_KEY"),
-    ("fastrouter", "FASTROUTER_API_KEY"),
-    ("freemodel", "FREEMODEL_API_KEY"),
-    ("friendli", "FRIENDLI_TOKEN"),
-    ("helicone", "HELICONE_API_KEY"),
-    ("huggingface", "HF_TOKEN"),
-    ("hyper", "HYPER_API_KEY"),
-    ("impossibl", "IMPOSSIBL_API_KEY"),
-    ("kenari", "KENARI_API_KEY"),
-    ("kilo", "KILO_API_KEY"),
-    ("lilac", "LILAC_API_KEY"),
-    ("llmgateway", "LLMGATEWAY_API_KEY"),
-    ("llmgateway-providers", "LLMGATEWAY_API_KEY"),
-    ("llmtr", "LLMTR_API_KEY"),
-    ("minimax", "MINIMAX_API_KEY"),
-    ("minimax-cn", "MINIMAX_API_KEY"),
-    ("moonshotai", "MOONSHOT_API_KEY"),
-    ("moonshotai-cn", "MOONSHOT_API_KEY"),
-    ("nearai", "NEARAI_API_KEY"),
-    ("ollama-cloud", "OLLAMA_API_KEY"),
-    ("opencode", "OPENCODE_API_KEY"),
-    ("opencode-go", "OPENCODE_API_KEY"),
-    ("pioneer", "PIONEER_API_KEY"),
-    ("poe", "POE_API_KEY"),
-    ("requesty", "REQUESTY_API_KEY"),
-    ("routing-run", "ROUTING_RUN_API_KEY"),
-    ("siliconflow", "SILICONFLOW_API_KEY"),
-    ("siliconflow-cn", "SILICONFLOW_CN_API_KEY"),
-    ("the-grid-ai", "THEGRID_API_KEY"),
-    ("trustedrouter", "TRUSTEDROUTER_API_KEY"),
-    ("zai", "ZHIPU_API_KEY"),
-    ("zai-coding-plan", "ZHIPU_API_KEY"),
-    ("zenmux", "ZENMUX_API_KEY"),
-    ("zhipuai", "ZHIPU_API_KEY"),
-    ("zhipuai-coding-plan", "ZHIPU_API_KEY"),
-    ("magpie", "MAGPIE_API_KEY"),
-];
-
-const RX_NATIVE_ENV_KEYS: &[&str] = &[
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_OAUTH_TOKEN",
-    "ANT_LING_API_KEY",
-    "QWEN_TOKEN_PLAN_API_KEY",
-    "QWEN_TOKEN_PLAN_CN_API_KEY",
-    "OPENAI_API_KEY",
-    "AZURE_OPENAI_API_KEY",
-    "NVIDIA_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "GEMINI_API_KEY",
-    "GOOGLE_CLOUD_API_KEY",
-    "GROQ_API_KEY",
-    "CEREBRAS_API_KEY",
-    "XAI_API_KEY",
-    "TYPESAFE_API_KEY",
-    "RADIUS_API_KEY",
-    "OPENROUTER_API_KEY",
-    "AI_GATEWAY_API_KEY",
-    "ZAI_API_KEY",
-    "ZAI_CODING_CN_API_KEY",
-    "MISTRAL_API_KEY",
-    "MINIMAX_API_KEY",
-    "MINIMAX_CN_API_KEY",
-    "MOONSHOT_API_KEY",
-    "HF_TOKEN",
-    "FIREWORKS_API_KEY",
-    "TOGETHER_API_KEY",
-    "BASETEN_API_KEY",
-    "OPENCODE_API_KEY",
-    "KIMI_API_KEY",
-    "META_API_KEY",
-    "CLOUDFLARE_API_KEY",
-    "XIAOMI_API_KEY",
-    "XIAOMI_TOKEN_PLAN_CN_API_KEY",
-    "XIAOMI_TOKEN_PLAN_AMS_API_KEY",
-    "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
-    "COPILOT_GITHUB_TOKEN",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_SESSION_TOKEN",
-    "AWS_BEARER_TOKEN_BEDROCK",
-];
-
-const RX_EXTRA_SECRET_ENV_KEYS: &[&str] = &["ANTHROPIC_AUTH_TOKEN"];
+mod providers;
+use providers::{
+    RX_BUNDLED_PROVIDERS, RX_EXTRA_SECRET_ENV_KEYS, RX_NATIVE_ENV_KEYS, generated_env,
+    is_secret_env_key, native_provider_env_ready,
+};
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RxConfig {
     default_provider: Option<String>,
     #[serde(default)]
@@ -114,11 +24,14 @@ struct RxConfig {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RxProvider {
     base_url: Option<String>,
     anthropic_base: Option<String>,
     auth: Option<String>,
     env: Option<String>,
+    #[serde(rename = "model")]
+    _model: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -247,7 +160,10 @@ pub(super) fn apply_native_args_with(
     command
         .env("RX_HOME", &rx_home)
         .env("RX_NO_UPDATE", "1")
-        .env("RX_NO_INSTALL", "1");
+        .env("RX_NO_INSTALL", "1")
+        .env_remove("RX_AGENT_PROVIDER")
+        .env_remove("RX_HOST_REQUEST")
+        .env_remove("RX_NO_YOLO");
     if let Some(spec) = invocation.model.as_deref() {
         let provider_arg = if let Some((provider, model_id)) = spec.split_once('/')
             && !provider.is_empty()
@@ -281,37 +197,88 @@ pub(super) fn apply_native_args_with(
     Ok(())
 }
 
-pub(super) fn secret_env_names(
+pub(super) fn collect_secrets(
     home: Option<&Path>,
-    extra_env_keys: impl IntoIterator<Item = String>,
+    rx_home_override: Option<OsString>,
+    env_map: &std::collections::HashMap<String, String>,
 ) -> Vec<String> {
-    let mut names = BTreeSet::new();
+    let mut secret_names = BTreeSet::new();
     for (_, env) in RX_BUNDLED_PROVIDERS {
-        names.insert((*env).to_owned());
+        secret_names.insert((*env).to_owned());
     }
     for env in RX_NATIVE_ENV_KEYS
         .iter()
         .chain(RX_EXTRA_SECRET_ENV_KEYS.iter())
     {
-        names.insert((*env).to_owned());
+        secret_names.insert((*env).to_owned());
     }
-    for key in extra_env_keys {
+    for key in env_map.keys() {
         if key.starts_with("RX_PROVIDER_") && key.ends_with("_API_KEY") {
-            names.insert(key);
+            secret_names.insert(key.clone());
         }
     }
     if let Some(home) = home
         && let Ok(body) = std::fs::read_to_string(home.join(".recall/rx.toml"))
-        && let Ok(config) = toml::from_str::<RxConfig>(&body)
+        && let Ok(value) = toml::from_str::<toml::Value>(&body)
+        && let Some(providers) = value.get("provider").and_then(toml::Value::as_table)
     {
-        for (id, entry) in config.provider {
-            if let Some(env) = entry.env.filter(|value| !value.is_empty()) {
-                names.insert(env);
+        for (id, entry) in providers {
+            if let Some(env) = entry
+                .get("env")
+                .and_then(toml::Value::as_str)
+                .filter(|value| !value.is_empty())
+            {
+                secret_names.insert(env.to_owned());
             }
-            names.insert(generated_env(&id));
+            secret_names.insert(generated_env(id));
         }
     }
-    names.into_iter().collect()
+    let mut secrets = secret_names
+        .iter()
+        .filter_map(|name| env_map.get(name).cloned())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if let Some(home) = home
+        && let Ok(body) = std::fs::read_to_string(home.join(".recall/rx.keys"))
+        && let Ok(value) = toml::from_str::<toml::Value>(&body)
+        && let Some(table) = value.as_table()
+    {
+        for val in table.values() {
+            if let Some(secret) = val.as_str().filter(|value| !value.is_empty()) {
+                secrets.push(secret.to_owned());
+            }
+        }
+    }
+    if let Ok(rx_home) = resolve_rx_home(rx_home_override, home.map(Path::to_path_buf))
+        && let Ok(body) = std::fs::read_to_string(rx_home.join("auth.json"))
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(&body)
+        && let Some(map) = value.as_object()
+    {
+        for entry in map.values() {
+            let Some(obj) = entry.as_object() else {
+                continue;
+            };
+            for field in ["key", "access", "refresh"] {
+                if let Some(secret) = obj
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.is_empty())
+                {
+                    secrets.push(secret.to_owned());
+                }
+            }
+            if let Some(env_obj) = obj.get("env").and_then(serde_json::Value::as_object) {
+                for (env_key, env_val) in env_obj {
+                    if let Some(secret) = env_val.as_str().filter(|value| !value.is_empty())
+                        && is_secret_env_key(env_key, &secret_names)
+                    {
+                        secrets.push(secret.to_owned());
+                    }
+                }
+            }
+        }
+    }
+    secrets
 }
 
 fn load_launcher_state(
@@ -395,65 +362,6 @@ fn rx_native_ready(rx_home: &Path, env_get: &impl Fn(&str) -> Option<String>) ->
     !provider.is_empty() && !model_id.is_empty() && native_provider_env_ready(provider, env_get)
 }
 
-fn has_nonempty_env(env_get: &impl Fn(&str) -> Option<String>, name: &str) -> bool {
-    env_get(name).is_some_and(|value| !value.is_empty())
-}
-
-fn native_provider_env_ready(provider: &str, env_get: &impl Fn(&str) -> Option<String>) -> bool {
-    match provider {
-        "github-copilot" => has_nonempty_env(env_get, "COPILOT_GITHUB_TOKEN"),
-        "anthropic" => {
-            has_nonempty_env(env_get, "ANTHROPIC_OAUTH_TOKEN")
-                || has_nonempty_env(env_get, "ANTHROPIC_API_KEY")
-        }
-        "ant-ling" => has_nonempty_env(env_get, "ANT_LING_API_KEY"),
-        "qwen-token-plan" | "qwen-token-plan-individual" => {
-            has_nonempty_env(env_get, "QWEN_TOKEN_PLAN_API_KEY")
-        }
-        "qwen-token-plan-cn" => has_nonempty_env(env_get, "QWEN_TOKEN_PLAN_CN_API_KEY"),
-        "openai" => has_nonempty_env(env_get, "OPENAI_API_KEY"),
-        "azure" => has_nonempty_env(env_get, "AZURE_OPENAI_API_KEY"),
-        "nvidia" => has_nonempty_env(env_get, "NVIDIA_API_KEY"),
-        "deepseek" => has_nonempty_env(env_get, "DEEPSEEK_API_KEY"),
-        "google" => has_nonempty_env(env_get, "GEMINI_API_KEY"),
-        "google-vertex" => has_nonempty_env(env_get, "GOOGLE_CLOUD_API_KEY"),
-        "groq" => has_nonempty_env(env_get, "GROQ_API_KEY"),
-        "cerebras" => has_nonempty_env(env_get, "CEREBRAS_API_KEY"),
-        "xai" => has_nonempty_env(env_get, "XAI_API_KEY"),
-        "typesafe" => has_nonempty_env(env_get, "TYPESAFE_API_KEY"),
-        "radius" => has_nonempty_env(env_get, "RADIUS_API_KEY"),
-        "openrouter" => has_nonempty_env(env_get, "OPENROUTER_API_KEY"),
-        "vercel-ai-gateway" => has_nonempty_env(env_get, "AI_GATEWAY_API_KEY"),
-        "zai" => has_nonempty_env(env_get, "ZAI_API_KEY"),
-        "zai-coding-cn" => has_nonempty_env(env_get, "ZAI_CODING_CN_API_KEY"),
-        "mistral" => has_nonempty_env(env_get, "MISTRAL_API_KEY"),
-        "minimax" => has_nonempty_env(env_get, "MINIMAX_API_KEY"),
-        "minimax-cn" => has_nonempty_env(env_get, "MINIMAX_CN_API_KEY"),
-        "moonshotai" | "moonshotai-cn" => has_nonempty_env(env_get, "MOONSHOT_API_KEY"),
-        "huggingface" => has_nonempty_env(env_get, "HF_TOKEN"),
-        "fireworks" => has_nonempty_env(env_get, "FIREWORKS_API_KEY"),
-        "together" => has_nonempty_env(env_get, "TOGETHER_API_KEY"),
-        "baseten" => has_nonempty_env(env_get, "BASETEN_API_KEY"),
-        "opencode" | "opencode-go" => has_nonempty_env(env_get, "OPENCODE_API_KEY"),
-        "kimi-coding" => has_nonempty_env(env_get, "KIMI_API_KEY"),
-        "meta" => has_nonempty_env(env_get, "META_API_KEY"),
-        "cloudflare-workers-ai" | "cloudflare-ai-gateway" => {
-            has_nonempty_env(env_get, "CLOUDFLARE_API_KEY")
-        }
-        "xiaomi" => has_nonempty_env(env_get, "XIAOMI_API_KEY"),
-        "xiaomi-token-plan-cn" => has_nonempty_env(env_get, "XIAOMI_TOKEN_PLAN_CN_API_KEY"),
-        "xiaomi-token-plan-ams" => has_nonempty_env(env_get, "XIAOMI_TOKEN_PLAN_AMS_API_KEY"),
-        "xiaomi-token-plan-sgp" => has_nonempty_env(env_get, "XIAOMI_TOKEN_PLAN_SGP_API_KEY"),
-        "amazon-bedrock" => {
-            has_nonempty_env(env_get, "AWS_BEARER_TOKEN_BEDROCK")
-                || (has_nonempty_env(env_get, "AWS_ACCESS_KEY_ID")
-                    && has_nonempty_env(env_get, "AWS_SECRET_ACCESS_KEY"))
-                || has_nonempty_env(env_get, "AWS_PROFILE")
-        }
-        _ => false,
-    }
-}
-
 fn auth_json_providers(path: &Path) -> Option<BTreeSet<String>> {
     let body = std::fs::read_to_string(path).ok()?;
     let value: serde_json::Value = serde_json::from_str(&body).ok()?;
@@ -512,20 +420,6 @@ fn is_valid_provider_id(id: &str) -> bool {
         && id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-}
-
-fn generated_env(id: &str) -> String {
-    let normalized = id
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    format!("RX_PROVIDER_{normalized}_API_KEY")
 }
 
 fn is_stable_version(version: &str) -> bool {

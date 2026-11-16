@@ -271,18 +271,27 @@ pub(super) fn error_text(prefix: &str, stderr: &str, stdout: &str) -> String {
 }
 
 pub(super) fn redact_secrets(value: &str) -> String {
-    redact_secrets_with(value, dirs::home_dir().as_deref(), std::env::vars())
+    redact_secrets_with(
+        value,
+        dirs::home_dir().as_deref(),
+        std::env::var_os("RX_HOME"),
+        std::env::vars(),
+    )
 }
 
 pub(super) fn redact_secrets_with(
     value: &str,
     home: Option<&Path>,
+    rx_home_override: Option<std::ffi::OsString>,
     env_vars: impl IntoIterator<Item = (String, String)>,
 ) -> String {
+    if value.is_empty() {
+        return String::new();
+    }
     let env_map = env_vars
         .into_iter()
         .collect::<std::collections::HashMap<_, _>>();
-    let mut names = [
+    let mut secrets = [
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "CURSOR_API_KEY",
@@ -295,14 +304,10 @@ pub(super) fn redact_secrets_with(
         "WINDSURF_API_KEY",
     ]
     .into_iter()
-    .map(str::to_owned)
+    .filter_map(|name| env_map.get(name).cloned())
     .collect::<Vec<_>>();
-    names.extend(super::rx::secret_env_names(home, env_map.keys().cloned()));
-    let mut secrets = names
-        .into_iter()
-        .filter_map(|name| env_map.get(&name).cloned())
-        .filter(|secret| !secret.is_empty())
-        .collect::<Vec<_>>();
+    secrets.extend(super::rx::collect_secrets(home, rx_home_override, &env_map));
+    secrets.retain(|secret| !secret.is_empty());
     secrets.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
     secrets.dedup();
     let mut redacted = value.to_string();
