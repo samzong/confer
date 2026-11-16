@@ -275,7 +275,7 @@ pub(super) fn redact_secrets(value: &str) -> String {
         value,
         dirs::home_dir().as_deref(),
         std::env::var_os("RX_HOME"),
-        std::env::vars(),
+        super::rx::utf8_env_vars(),
     )
 }
 

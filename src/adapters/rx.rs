@@ -18,6 +18,7 @@ struct RxConfig {
 #[derive(Deserialize)]
 struct RxProvider {
     base_url: Option<String>,
+    anthropic_base: Option<String>,
     auth: Option<String>,
     env: Option<String>,
 }
@@ -100,7 +101,7 @@ pub(super) fn rx_agent_installed_with(
 }
 
 pub(super) fn rx_has_credentials(home: &Path) -> bool {
-    rx_has_credentials_with(home, std::env::var_os("RX_HOME"), std::env::vars())
+    rx_has_credentials_with(home, std::env::var_os("RX_HOME"), utf8_env_vars())
 }
 
 pub(super) fn rx_has_credentials_with(
@@ -135,7 +136,7 @@ pub(super) fn apply_native_args(
         command,
         home,
         std::env::var_os("RX_HOME"),
-        std::env::vars(),
+        utf8_env_vars(),
     )
 }
 
@@ -257,6 +258,11 @@ pub(super) fn collect_secrets(
     secrets
 }
 
+pub(super) fn utf8_env_vars() -> impl Iterator<Item = (String, String)> {
+    std::env::vars_os()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+}
+
 fn nonempty_env_map(
     env_vars: impl IntoIterator<Item = (String, String)>,
 ) -> HashMap<String, String> {
@@ -347,7 +353,8 @@ fn launcher_provider_ready(
             env_map.contains_key(&generated_env(id)) || env_map.contains_key(&direct)
         }
     };
-    let local_magpie = id == "magpie" && entry.and_then(|e| e.base_url.as_deref()).is_none();
+    let local_magpie =
+        id == "magpie" && entry.is_none_or(|e| e.base_url.is_none() && e.anthropic_base.is_none());
     match entry.and_then(|e| e.auth.as_deref()).unwrap_or("api_key") {
         "api_key" => stored || environment || local_magpie,
         "env" => environment || local_magpie,
