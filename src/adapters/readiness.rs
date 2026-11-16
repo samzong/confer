@@ -10,6 +10,12 @@ pub(crate) fn check_readiness(agent: AgentKind) -> Readiness {
     let executable = super::find_executable(agent);
     let reason = match &executable {
         None => Some("executable not found on PATH"),
+        Some(path)
+            if agent == AgentKind::Rx
+                && !super::rx::rx_agent_installed(path, dirs::home_dir().as_deref()) =>
+        {
+            Some("rx-agent is not installed; run rxa once in a terminal")
+        }
         Some(_) if !has_local_auth_marker(agent) => {
             Some("local authentication state was not found")
         }
@@ -29,7 +35,11 @@ pub(crate) fn find_executable(agent: AgentKind) -> Option<PathBuf> {
 
 pub(crate) fn find_executable_by_names(names: &[&str]) -> Option<PathBuf> {
     let paths = std::env::var_os("PATH")?;
-    for directory in std::env::split_paths(&paths) {
+    find_executable_in_paths(names, &paths)
+}
+
+pub(super) fn find_executable_in_paths(names: &[&str], paths: &std::ffi::OsStr) -> Option<PathBuf> {
+    for directory in std::env::split_paths(paths) {
         for name in names {
             let candidate = directory.join(name);
             if executable_file(&candidate) {
@@ -41,7 +51,7 @@ pub(crate) fn find_executable_by_names(names: &[&str]) -> Option<PathBuf> {
 }
 
 #[cfg(unix)]
-fn executable_file(path: &Path) -> bool {
+pub(super) fn executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.metadata()
         .ok()
@@ -49,12 +59,12 @@ fn executable_file(path: &Path) -> bool {
 }
 
 #[cfg(windows)]
-fn executable_file(path: &Path) -> bool {
+pub(super) fn executable_file(path: &Path) -> bool {
     path.is_file() || path.with_extension("exe").is_file()
 }
 
 #[cfg(not(any(unix, windows)))]
-fn executable_file(path: &Path) -> bool {
+pub(super) fn executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
@@ -64,7 +74,7 @@ fn has_local_auth_marker(agent: AgentKind) -> bool {
         AgentKind::Codex => std::env::var_os("OPENAI_API_KEY").is_some(),
         AgentKind::Cursor => std::env::var_os("CURSOR_API_KEY").is_some(),
         AgentKind::Grok => std::env::var_os("XAI_API_KEY").is_some(),
-        AgentKind::Agy | AgentKind::Kimi | AgentKind::Devin => false,
+        AgentKind::Agy | AgentKind::Kimi | AgentKind::Devin | AgentKind::Rx => false,
         AgentKind::Opencode => true,
         AgentKind::Copilot => [
             "COPILOT_GITHUB_TOKEN",
@@ -102,6 +112,7 @@ fn has_local_auth_marker(agent: AgentKind) -> bool {
         }
         AgentKind::Devin => return devin_has_credentials(&home),
         AgentKind::Opencode => return true,
+        AgentKind::Rx => return super::rx::rx_has_credentials(&home),
     };
     markers.iter().any(|marker| home.join(marker).is_file())
 }

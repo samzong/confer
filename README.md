@@ -1,6 +1,6 @@
 # Confer
 
-Confer exposes local coding-agent execution through MCP. Coding agents and other applications can create rooms, send work to Claude Code, Codex, Cursor Agent, Grok Build, Antigravity CLI, GitHub Copilot CLI, Kimi Code, Devin for Terminal, and OpenCode, and collect their results.
+Confer exposes local coding-agent execution through MCP. Coding agents and other applications can create rooms, send work to Claude Code, Codex, Cursor Agent, Grok Build, Antigravity CLI, GitHub Copilot CLI, Kimi Code, Devin for Terminal, OpenCode, and Rx, and collect their results.
 
 The host manages tasks and relays; it is not an execution seat. Supply `target_size` for automatic seat selection, explicit `seats`, or both. There is no default count or fixed seat limit, and identical agent configurations can occupy independent seats.
 
@@ -22,7 +22,7 @@ confer mcp install --agent gemini-cli --agent qwen --agent droid
 confer mcp uninstall --agent qwen
 ```
 
-MCP and Skill installation support Claude Code, Codex, Cursor, Grok, Antigravity CLI, GitHub Copilot CLI, Kimi Code, Devin for Terminal, and OpenCode.
+MCP and Skill installation support Claude Code, Codex, Cursor, Grok, Antigravity CLI, GitHub Copilot CLI, Kimi Code, Devin for Terminal, OpenCode, and Rx.
 Both commands also support Google Gemini CLI (`gemini-cli`), Qwen Code (`qwen`), Factory Droid (`droid`), Qoder CLI (`qoder`), and Kiro (`kiro`).
 These five additions can host Confer and install its Skill. Seat adapters keep their existing list.
 Use `gemini-cli` for Google Gemini CLI. The existing `gemini` alias selects Antigravity.

@@ -158,6 +158,7 @@ fn host_configuration_directory_overrides_are_respected() {
             "custom",
             "custom/settings.json",
         ),
+        ("rx", "RX_HOME", "custom", "custom/mcp.json"),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let output = Command::new(env!("CARGO_BIN_EXE_confer"))
@@ -213,6 +214,7 @@ fn paired_hosts_install_bundled_skills_in_user_and_project_scopes() {
         ("droid", ".factory"),
         ("qoder", ".qoder"),
         ("kiro", ".kiro"),
+        ("rx", ".agents"),
     ] {
         for scope in ["user", "project"] {
             let dir = tempfile::tempdir().unwrap();
@@ -393,4 +395,63 @@ fn auto_skill_selection_distinguishes_gemini_from_antigravity_by_executable() {
     let output = success(run(dir.path(), &args));
     assert!(output.contains("gemini-cli"), "{output}");
     assert!(dir.path().join(".gemini/skills/confer/SKILL.md").is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn rx_installation_uses_agents_skills_and_matches_auto_detection() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let custom = dir.path().join("custom-rx");
+    std::fs::create_dir(dir.path().join(".rx")).unwrap();
+
+    let vars = [("RX_HOME", custom.to_str().unwrap())];
+    assert!(
+        !run_with_env(
+            dir.path(),
+            &["skill", "install", "--scope", "user", "--yes"],
+            &vars
+        )
+        .status
+        .success()
+    );
+    assert!(!dir.path().join(".agents/skills/confer/SKILL.md").exists());
+
+    success(run_with_env(
+        dir.path(),
+        &[
+            "skill", "install", "--agent", "rx", "--scope", "user", "--yes",
+        ],
+        &vars,
+    ));
+    assert_eq!(
+        std::fs::read(dir.path().join(".agents/skills/confer/SKILL.md")).unwrap(),
+        include_bytes!("../skills/confer/SKILL.md")
+    );
+    assert!(!custom.join("skills").exists() && !dir.path().join(".rx/skills").exists());
+
+    std::fs::remove_dir_all(dir.path().join(".agents")).unwrap();
+    std::fs::create_dir(dir.path().join("bin")).unwrap();
+    let rxa = dir.path().join("bin/rxa");
+    std::fs::write(&rxa, "").unwrap();
+    std::fs::set_permissions(&rxa, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    success(run_with_env(
+        dir.path(),
+        &["skill", "install", "--scope", "user", "--yes"],
+        &vars,
+    ));
+    assert!(dir.path().join(".agents/skills/confer/SKILL.md").is_file());
+
+    success(run_with_env(dir.path(), &["mcp", "install"], &vars));
+    let auto_mcp = read(&custom.join("mcp.json"));
+    std::fs::remove_file(custom.join("mcp.json")).unwrap();
+    success(run_with_env(
+        dir.path(),
+        &["mcp", "install", "--agent", "rx"],
+        &vars,
+    ));
+    assert_eq!(auto_mcp, read(&custom.join("mcp.json")));
+    assert_eq!(auto_mcp["mcpServers"]["confer"]["type"], "stdio");
 }

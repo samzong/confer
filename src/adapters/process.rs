@@ -1,4 +1,5 @@
 use super::Invocation;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncReadExt;
@@ -270,24 +271,33 @@ pub(super) fn error_text(prefix: &str, stderr: &str, stdout: &str) -> String {
 }
 
 pub(super) fn redact_secrets(value: &str) -> String {
+    redact_secrets_with(
+        value,
+        dirs::home_dir().as_deref(),
+        std::env::var_os("RX_HOME"),
+        super::rx::utf8_env_vars(),
+    )
+}
+
+pub(super) fn redact_secrets_with(
+    value: &str,
+    home: Option<&Path>,
+    rx_home_override: Option<std::ffi::OsString>,
+    env_vars: impl IntoIterator<Item = (String, String)>,
+) -> String {
+    if value.is_empty() {
+        return String::new();
+    }
+    let env_map = env_vars
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut secrets = super::rx::collect_secrets(home, rx_home_override, &env_map);
+    secrets.retain(|secret| !secret.is_empty());
+    secrets.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
+    secrets.dedup();
     let mut redacted = value.to_string();
-    for name in [
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "CURSOR_API_KEY",
-        "XAI_API_KEY",
-        "COPILOT_GITHUB_TOKEN",
-        "GH_TOKEN",
-        "GITHUB_TOKEN",
-        "COPILOT_PROVIDER_API_KEY",
-        "COPILOT_PROVIDER_BEARER_TOKEN",
-        "WINDSURF_API_KEY",
-    ] {
-        if let Ok(secret) = std::env::var(name)
-            && !secret.is_empty()
-        {
-            redacted = redacted.replace(&secret, "[REDACTED]");
-        }
+    for secret in secrets {
+        redacted = redacted.replace(&secret, "[REDACTED]");
     }
     redacted
 }

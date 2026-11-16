@@ -168,7 +168,7 @@ fn supported_skill_agents(
                 .map(|host| host.id)
                 .filter(|id| supported.contains(&id.as_str()))
                 .collect::<Vec<_>>();
-            for host in InstallHost::ADDITIONAL {
+            for host in InstallHost::all() {
                 if let Some(present) = host.skill_auto_detection(scope)? {
                     detected.retain(|id| id != host.skill_host_id());
                     if present {
@@ -266,6 +266,7 @@ mod tests {
             (vec!["agy"], "antigravity-cli"),
             (vec!["copilot", "github-copilot"], "github-copilot"),
             (vec!["kimi", "kimi-cli"], "kimi-cli"),
+            (vec!["rx", "rxa", "rx-agent"], "rx-agent"),
         ] {
             assert_eq!(
                 supported_skill_agents(

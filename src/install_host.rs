@@ -77,7 +77,7 @@ impl InstallHost {
     }
 
     pub(crate) fn skill_auto_detection(self, scope: kitup::Scope) -> Result<Option<bool>> {
-        if self == Self::GeminiCli {
+        if matches!(self, Self::GeminiCli | Self::Agent(AgentKind::Rx)) {
             return Ok(Some(self.program().is_some()));
         }
         if scope == kitup::Scope::User
@@ -107,6 +107,11 @@ impl InstallHost {
             Self::Agent(AgentKind::Cursor) => Ok(home()?.join(".cursor/mcp.json")),
             Self::Agent(AgentKind::Kimi) => Ok(crate::adapters::resolve_kimi_home(
                 std::env::var_os("KIMI_CODE_HOME"),
+                dirs::home_dir(),
+            )?
+            .join("mcp.json")),
+            Self::Agent(AgentKind::Rx) => Ok(crate::adapters::resolve_rx_home(
+                std::env::var_os("RX_HOME"),
                 dirs::home_dir(),
             )?
             .join("mcp.json")),
@@ -158,11 +163,27 @@ pub(crate) fn skill_hosts_file(
     scope: kitup::Scope,
     selector: &kitup::AgentSelector,
 ) -> Result<Option<tempfile::NamedTempFile>> {
-    if scope == kitup::Scope::Project {
-        return Ok(None);
-    }
     let mut hosts = kitup::load_host_spec(None)?;
     let mut changed = false;
+    if !hosts.iter().any(|entry| entry.id == "rx-agent") {
+        hosts.push(kitup::Host {
+            id: "rx-agent".into(),
+            display_name: "Rx".into(),
+            aliases: vec!["rx".into(), "rxa".into()],
+            project_skills_dirs: vec![".agents/skills".into()],
+            user_skills_dirs: vec!["~/.agents/skills".into()],
+            detect: vec!["~/.rx".into()],
+            status: "community".into(),
+            notes: Vec::new(),
+        });
+        changed = true;
+    }
+    if scope == kitup::Scope::Project {
+        if changed {
+            return skill_hosts_file_result(hosts);
+        }
+        return Ok(None);
+    }
     for (host, variable) in InstallHost::SKILL_DIRECTORY_OVERRIDES {
         if let kitup::AgentSelector::Explicit(values) = selector
             && !values
@@ -210,6 +231,10 @@ pub(crate) fn skill_hosts_file(
     if !changed {
         return Ok(None);
     }
+    skill_hosts_file_result(hosts)
+}
+
+fn skill_hosts_file_result(hosts: Vec<kitup::Host>) -> Result<Option<tempfile::NamedTempFile>> {
     let hosts = hosts
         .into_iter()
         .map(|host| {

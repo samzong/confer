@@ -178,6 +178,7 @@ fn seat_selection_validates_the_final_agent_configuration() {
         (AgentKind::Claude, None, Some("invalid")),
         (AgentKind::Agy, None, Some("xhigh")),
         (AgentKind::Kimi, None, Some("none")),
+        (AgentKind::Rx, None, Some("none")),
     ] {
         let request = SeatSpecInput {
             agent: Some(agent.id().into()),
