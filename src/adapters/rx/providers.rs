@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
 pub(super) const RX_BUNDLED_PROVIDERS: &[(&str, &str)] = &[
     ("openrouter", "OPENROUTER_API_KEY"),
@@ -103,13 +104,18 @@ fn has_nonempty_env(env_get: &impl Fn(&str) -> Option<String>, name: &str) -> bo
 
 pub(super) fn native_provider_env_ready(
     provider: &str,
+    home: &Path,
     env_get: &impl Fn(&str) -> Option<String>,
 ) -> bool {
     match provider {
         "github-copilot" => has_nonempty_env(env_get, "COPILOT_GITHUB_TOKEN"),
         "anthropic" => {
-            has_nonempty_env(env_get, "ANTHROPIC_OAUTH_TOKEN")
+            has_nonempty_env(env_get, "ANTHROPIC_AUTH_TOKEN")
+                || has_nonempty_env(env_get, "ANTHROPIC_OAUTH_TOKEN")
                 || has_nonempty_env(env_get, "ANTHROPIC_API_KEY")
+                || (has_nonempty_env(env_get, "ANTHROPIC_FEDERATION_RULE_ID")
+                    && has_nonempty_env(env_get, "ANTHROPIC_ORGANIZATION_ID")
+                    && has_nonempty_env(env_get, "ANTHROPIC_IDENTITY_TOKEN_FILE"))
         }
         "ant-ling" => has_nonempty_env(env_get, "ANT_LING_API_KEY"),
         "qwen-token-plan" | "qwen-token-plan-individual" => {
@@ -121,7 +127,19 @@ pub(super) fn native_provider_env_ready(
         "nvidia" => has_nonempty_env(env_get, "NVIDIA_API_KEY"),
         "deepseek" => has_nonempty_env(env_get, "DEEPSEEK_API_KEY"),
         "google" => has_nonempty_env(env_get, "GEMINI_API_KEY"),
-        "google-vertex" => has_nonempty_env(env_get, "GOOGLE_CLOUD_API_KEY"),
+        "google-vertex" => {
+            has_nonempty_env(env_get, "GOOGLE_CLOUD_API_KEY")
+                || ((has_nonempty_env(env_get, "GOOGLE_CLOUD_PROJECT")
+                    || has_nonempty_env(env_get, "GCLOUD_PROJECT"))
+                    && has_nonempty_env(env_get, "GOOGLE_CLOUD_LOCATION")
+                    && env_get("GOOGLE_APPLICATION_CREDENTIALS")
+                        .filter(|value| !value.is_empty())
+                        .map_or_else(
+                            || home.join(".config/gcloud/application_default_credentials.json"),
+                            PathBuf::from,
+                        )
+                        .is_file())
+        }
         "groq" => has_nonempty_env(env_get, "GROQ_API_KEY"),
         "cerebras" => has_nonempty_env(env_get, "CEREBRAS_API_KEY"),
         "xai" => has_nonempty_env(env_get, "XAI_API_KEY"),
@@ -142,8 +160,14 @@ pub(super) fn native_provider_env_ready(
         "opencode" | "opencode-go" => has_nonempty_env(env_get, "OPENCODE_API_KEY"),
         "kimi-coding" => has_nonempty_env(env_get, "KIMI_API_KEY"),
         "meta" => has_nonempty_env(env_get, "META_API_KEY"),
-        "cloudflare-workers-ai" | "cloudflare-ai-gateway" => {
+        "cloudflare-workers-ai" => {
             has_nonempty_env(env_get, "CLOUDFLARE_API_KEY")
+                && has_nonempty_env(env_get, "CLOUDFLARE_ACCOUNT_ID")
+        }
+        "cloudflare-ai-gateway" => {
+            has_nonempty_env(env_get, "CLOUDFLARE_API_KEY")
+                && has_nonempty_env(env_get, "CLOUDFLARE_ACCOUNT_ID")
+                && has_nonempty_env(env_get, "CLOUDFLARE_GATEWAY_ID")
         }
         "xiaomi" => has_nonempty_env(env_get, "XIAOMI_API_KEY"),
         "xiaomi-token-plan-cn" => has_nonempty_env(env_get, "XIAOMI_TOKEN_PLAN_CN_API_KEY"),
@@ -151,9 +175,12 @@ pub(super) fn native_provider_env_ready(
         "xiaomi-token-plan-sgp" => has_nonempty_env(env_get, "XIAOMI_TOKEN_PLAN_SGP_API_KEY"),
         "amazon-bedrock" => {
             has_nonempty_env(env_get, "AWS_BEARER_TOKEN_BEDROCK")
+                || has_nonempty_env(env_get, "AWS_PROFILE")
                 || (has_nonempty_env(env_get, "AWS_ACCESS_KEY_ID")
                     && has_nonempty_env(env_get, "AWS_SECRET_ACCESS_KEY"))
-                || has_nonempty_env(env_get, "AWS_PROFILE")
+                || has_nonempty_env(env_get, "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI")
+                || has_nonempty_env(env_get, "AWS_CONTAINER_CREDENTIALS_FULL_URI")
+                || has_nonempty_env(env_get, "AWS_WEB_IDENTITY_TOKEN_FILE")
         }
         _ => false,
     }

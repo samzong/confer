@@ -314,6 +314,28 @@ fn rx_auth_marker_accepts_native_store_and_launcher_provider_without_reading_key
     assert!(super::rx::rx_has_credentials_with(home, None, |key| {
         anthropic_only.get(key).map(|value| (*value).to_owned())
     }));
+    let anthropic_auth_token = HashMap::from([("ANTHROPIC_AUTH_TOKEN", "not-a-real-key")]);
+    assert!(super::rx::rx_has_credentials_with(home, None, |key| {
+        anthropic_auth_token
+            .get(key)
+            .map(|value| (*value).to_owned())
+    }));
+    std::fs::write(
+        home.join(".rx/config.json"),
+        r#"{"model":"cloudflare-workers-ai/@cf/meta/llama-3"}"#,
+    )
+    .unwrap();
+    let cf_key_only = HashMap::from([("CLOUDFLARE_API_KEY", "not-a-real-key")]);
+    assert!(!super::rx::rx_has_credentials_with(home, None, |key| {
+        cf_key_only.get(key).map(|value| (*value).to_owned())
+    }));
+    let cf_complete = HashMap::from([
+        ("CLOUDFLARE_API_KEY", "not-a-real-key"),
+        ("CLOUDFLARE_ACCOUNT_ID", "acct-123"),
+    ]);
+    assert!(super::rx::rx_has_credentials_with(home, None, |key| {
+        cf_complete.get(key).map(|value| (*value).to_owned())
+    }));
     std::fs::remove_file(home.join(".rx/config.json")).unwrap();
 
     std::fs::write(

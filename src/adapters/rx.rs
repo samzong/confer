@@ -125,11 +125,11 @@ pub(super) fn rx_has_credentials_with(
         return false;
     };
     match config.as_ref().and_then(|c| c.default_provider.as_deref()) {
-        Some("none") => rx_native_ready(&rx_home, &env_get),
+        Some("none") => rx_native_ready(home, &rx_home, &env_get),
         Some(provider) => launcher_provider_ready(provider, config.as_ref(), &keys, &env_get),
         None => {
             launcher_provider_ready("openrouter", config.as_ref(), &keys, &env_get)
-                || rx_native_ready(&rx_home, &env_get)
+                || rx_native_ready(home, &rx_home, &env_get)
         }
     }
 }
@@ -345,7 +345,7 @@ fn launcher_provider_ready(
     }
 }
 
-fn rx_native_ready(rx_home: &Path, env_get: &impl Fn(&str) -> Option<String>) -> bool {
+fn rx_native_ready(home: &Path, rx_home: &Path, env_get: &impl Fn(&str) -> Option<String>) -> bool {
     if auth_json_providers(&rx_home.join("auth.json"))
         .is_some_and(|providers| !providers.is_empty())
     {
@@ -359,7 +359,9 @@ fn rx_native_ready(rx_home: &Path, env_get: &impl Fn(&str) -> Option<String>) ->
     else {
         return false;
     };
-    !provider.is_empty() && !model_id.is_empty() && native_provider_env_ready(provider, env_get)
+    !provider.is_empty()
+        && !model_id.is_empty()
+        && native_provider_env_ready(provider, home, env_get)
 }
 
 fn auth_json_providers(path: &Path) -> Option<BTreeSet<String>> {
