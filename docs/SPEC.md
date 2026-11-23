@@ -132,6 +132,10 @@ Each seat has a private native session, sees only addressed messages, and return
 
 The public MCP surface contains eight tools. Calls require the verified `workspace`, except `list_rooms` with `scope: all`. Update callers and the bundled Skill together, restart MCP connections, and refresh schemas after upgrading. `target_size` excludes the host. Creation requires a target size or explicit seats. Unavailable choices fail without replacement. The room cache format and existing room workspaces are unchanged.
 
+Exported tool schemas keep native JSON array and object types for nested parameters. At runtime, `seats`, `seat`, `recipients`, and `delivery_ids` accept either native JSON values or equivalent JSON strings from untyped MCP callers. When those fields receive booleans, `null`, unexpected scalars, or disallowed empty arrays, Confer returns a circuit-breaker parameter error. The error names the tool, the field path, and the received value type, and warns against unchanged retries. It also gives a concrete fallback such as single-target calls, `add_seat` loops, or JSON string encoding.
+
+By default, every MCP tool response stays within 8,800 UTF-8 bytes when serialized as JSON. Before measuring size, Confer strips ANSI escape sequences and normalizes bare carriage-return progress frames in rendered text and errors. In-memory `DeliveryState` values and persisted `rooms.json` records remain raw and lossless, and Confer never writes message or reply files. When a room response exceeds the inline budget, Confer keeps target, uncertain, and active seats first and sets `omitted_seats`. Oversized tool errors also fold from head and tail within the same byte limit.
+
 ### `create_room`
 
 Creates a room for the host task's supplied workspace.
@@ -159,6 +163,8 @@ Retires one seat by name or ID using `room_id`, `seat`, and the host-verified wo
 Lists rooms. `scope` defaults to `current`, which requires the host task's absolute directory in `workspace` and normalizes it like creation. `all` returns metadata for every recorded workspace without requiring a workspace or inspecting the MCP process working directory. The bundled Skill uses this when the user explicitly asks to recover an earlier room; other callers decide their own discovery workflow. Discovery does not authorize operating on rooms outside the host task's workspace.
 
 Output includes room ID, name, participants, native-session availability, and timestamps. Each seat includes `resume_command`, `previous_delivery_uncertain`, and `uncertain_delivery_id`. It never returns message content.
+
+Input accepts an optional `full_output` boolean that defaults to `false`. When the serialized list exceeds 8,800 UTF-8 bytes and `full_output` is `false`, Confer keeps the newest rooms first and sets `omitted_rooms`. If the newest room alone exceeds the budget, Confer trims lower-priority seats in that room and sets `omitted_seats`. When `full_output` is `true`, `list_rooms` returns every matching room and seat without omission.
 
 ### `send_message`
 
@@ -191,6 +197,8 @@ After forced termination, Confer waits up to three seconds for the child to exit
 
 Cancellation does not retire the seat or undo side effects. Queued deliveries proceed only if cleanup leaves no uncertain marker. Otherwise, they fail before dispatch. Inspect native work, then clear the marker before sending again. Later sends resume the recorded session. If no ID was observed, the cancellation result explains that the next explicit send creates a new native session.
 
+When serialized output exceeds 8,800 UTF-8 bytes, `cancel_delivery` folds long fields, sets `output_folded` to `true`, and keeps `answer_incomplete` unchanged. If fixed metadata across many deliveries exceeds the budget, Confer keeps leading entries and reports the rest in `omitted_deliveries`. Call `wait_output` with `delivery_ids`, `timeout_ms` set to `0`, and `full_output` set to `true` to read unfolded delivery output.
+
 ### `wait_output`
 
 Waits for specified deliveries or the room’s current live deliveries. Requires `room_id` and the host-verified workspace root in `workspace`. `timeout_ms` defaults to `120000`, accepts `0` for an immediate snapshot, and is capped at `600000`.
@@ -198,6 +206,8 @@ Waits for specified deliveries or the room’s current live deliveries. Requires
 Output includes delivery status, final answer, error, and `resume_command`. Status is `queued`, `running`, `completed`, `failed`, `cancelled`, or `awaiting_answer`. A resume command enters the workspace and opens the native session interactively. Cursor ACP sessions are separate from CLI chats and return no command. Do not resume while that seat has queued or running deliveries: two processes can write the same session. Thinking, token deltas, and intermediate tool events are excluded. A timeout returns current results without cancellation. `cancelled` is terminal. `answer_incomplete: true` marks a partial answer.
 
 For a Codex or Cursor question, Confer stops the native turn through native cancellation and returns the question in `question`. After a clean question-triggered stop, `awaiting_answer` is terminal; `completed` is true. Caller cancellation stays `cancelled`. The host must supply an answer as a new message to the same seat. No native question request remains open. Confer neither fabricates an answer nor skips the question. Failed cleanup preserves the question and error and can leave uncertainty. Questions are lost on MCP exit.
+
+Input accepts an optional `full_output` boolean that defaults to `false`. When `full_output` is `false` and serialized output exceeds 8,800 UTF-8 bytes, Confer allocates space across variable fields with water-filling. Short answers and short errors keep their full text, while longer answers, errors, or oversized questions fold from head and tail. Folded deliveries set `output_folded` to `true` without changing `answer_incomplete`, and include a recovery hint with the folded UTF-8 byte count. If fixed metadata across many deliveries exceeds the budget, Confer keeps leading entries and sets `omitted_deliveries`. When `full_output` is `true`, `wait_output` skips terminal sanitization and folding and returns lossless in-memory output.
 
 ## CLI surface
 

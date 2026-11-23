@@ -1,4 +1,8 @@
+mod state;
 mod worker;
+pub(super) use state::{
+    DeliveryState, DeliveryStatus, SendMessageOutput, SendReceipt, WaitOutput, deliveries_completed,
+};
 #[cfg(test)]
 use worker::native_session_outcome;
 use worker::run_seat_worker;
@@ -9,7 +13,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use serde::Serialize;
 use tokio::sync::{Mutex, mpsc, watch};
 
 use super::ConferMcp;
@@ -18,86 +21,13 @@ use super::api::{
 };
 use crate::adapters::{self, Invocation};
 use crate::state::{StateStore, canonical_workspace, mark_seat_dispatch, seat_dispatch_id};
-use crate::types::{AgentKind, RoomRecord, SeatRecord, SeatStatus};
+#[cfg(test)]
+use crate::types::AgentKind;
+use crate::types::{RoomRecord, SeatRecord, SeatStatus};
 
 const DEFAULT_WAIT_MS: u64 = 120_000;
 const MAX_WAIT_MS: u64 = 600_000;
 const CANCEL_WAIT_MS: u64 = 8_000;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum DeliveryStatus {
-    Queued,
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-    AwaitingAnswer,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct DeliveryState {
-    delivery_id: String,
-    room_id: String,
-    seat_id: String,
-    seat_name: String,
-    agent: AgentKind,
-    status: DeliveryStatus,
-    final_answer: Option<String>,
-    error: Option<String>,
-    resume_command: Option<String>,
-    answer_incomplete: bool,
-    previous_delivery_uncertain: bool,
-    question: Option<serde_json::Value>,
-    uncertain_delivery_id: Option<String>,
-    #[serde(skip)]
-    cancel_requested: bool,
-    #[serde(skip)]
-    cancellation: adapters::Cancellation,
-}
-
-impl DeliveryState {
-    fn terminal(&self) -> bool {
-        matches!(
-            self.status,
-            DeliveryStatus::Completed
-                | DeliveryStatus::Failed
-                | DeliveryStatus::Cancelled
-                | DeliveryStatus::AwaitingAnswer
-        )
-    }
-}
-
-fn deliveries_completed(deliveries: &[DeliveryState]) -> bool {
-    !deliveries.is_empty() && deliveries.iter().all(DeliveryState::terminal)
-}
-
-#[derive(Debug, Serialize)]
-struct SendReceipt {
-    delivery_id: String,
-    seat_id: String,
-    seat_name: String,
-    agent: AgentKind,
-    accepted: bool,
-    previous_delivery_uncertain: bool,
-    uncertain_delivery_id: Option<String>,
-    resume_command: Option<String>,
-    error: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub(super) struct SendMessageOutput {
-    room_id: String,
-    deliveries: Vec<SendReceipt>,
-}
-
-#[derive(Debug, Serialize)]
-pub(super) struct WaitOutput {
-    room_id: String,
-    completed: bool,
-    timed_out: bool,
-    deliveries: Vec<DeliveryState>,
-}
 
 #[derive(Clone)]
 struct QueuedDelivery {
@@ -283,6 +213,11 @@ impl DeliveryRuntime {
             .await
             .contains_key(&seat_key(room_id, seat_id))
     }
+
+    #[cfg(test)]
+    pub(super) fn insert_test_delivery(&self, delivery: DeliveryState) {
+        self.deliveries.insert(delivery);
+    }
 }
 
 impl ConferMcp {
@@ -311,6 +246,7 @@ impl ConferMcp {
         drop(lease);
         Ok(super::api::RoomOutput {
             room: super::api::room_view(&room, &self.store),
+            priority_seat_id: Some(seat.id.clone()),
         })
     }
 
@@ -436,7 +372,7 @@ impl ConferMcp {
         args: CancelDeliveryArgs,
     ) -> Result<WaitOutput> {
         if args.delivery_ids.is_empty() {
-            bail!("delivery_ids must not be empty");
+            bail!("{}", super::input::empty_cancel_delivery_ids_error());
         }
         let workspace = canonical_workspace(&args.workspace)?;
         self.store.room_for_workspace(&args.room_id, &workspace)?;
@@ -543,7 +479,7 @@ fn resolve_recipients<'a>(
     recipients: &[String],
 ) -> Result<Vec<&'a SeatRecord>> {
     if recipients.is_empty() {
-        bail!("recipients must not be empty; use '*' to broadcast");
+        bail!("{}", super::input::empty_recipients_error());
     }
     if recipients.iter().any(|recipient| recipient == "*") {
         if recipients.len() != 1 {
