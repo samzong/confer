@@ -1,11 +1,8 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
 use chrono::{SecondsFormat, Utc};
-use rmcp::model::CallToolResult;
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::adapters;
 use crate::state::StateStore;
@@ -25,7 +22,7 @@ pub(super) struct SeatSpecInput {
     pub(super) instructions: Option<String>,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, schemars::JsonSchema)]
 pub(super) struct CreateRoomArgs {
     pub(super) workspace: PathBuf,
     #[serde(default)]
@@ -53,9 +50,11 @@ pub(super) struct ListRoomsArgs {
     pub(super) workspace: Option<PathBuf>,
     #[serde(default)]
     pub(super) scope: Option<RoomScope>,
+    #[serde(default)]
+    pub(super) full_output: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, schemars::JsonSchema)]
 pub(super) struct AddSeatArgs {
     pub(super) workspace: PathBuf,
     pub(super) room_id: String,
@@ -69,7 +68,7 @@ pub(super) struct RetireSeatArgs {
     pub(super) seat: String,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, schemars::JsonSchema)]
 pub(super) struct SendMessageArgs {
     pub(super) workspace: PathBuf,
     pub(super) room_id: String,
@@ -77,8 +76,18 @@ pub(super) struct SendMessageArgs {
     pub(super) message: String,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Deserialize)]
 pub(super) struct WaitOutputArgs {
+    pub(super) workspace: PathBuf,
+    pub(super) room_id: String,
+    #[serde(default)]
+    pub(super) delivery_ids: Vec<String>,
+    #[serde(default)]
+    pub(super) timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, schemars::JsonSchema)]
+pub(super) struct WaitOutputParams {
     pub(super) workspace: PathBuf,
     pub(super) room_id: String,
     #[serde(default)]
@@ -86,9 +95,11 @@ pub(super) struct WaitOutputArgs {
     #[serde(default)]
     #[schemars(range(min = 0, max = 600_000))]
     pub(super) timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub(super) full_output: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, schemars::JsonSchema)]
 pub(super) struct CancelDeliveryArgs {
     pub(super) workspace: PathBuf,
     pub(super) room_id: String,
@@ -106,27 +117,29 @@ pub(super) struct ClearUncertainDeliveryArgs {
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct SeatView {
-    id: String,
-    name: String,
-    agent: AgentKind,
-    model: Option<String>,
-    reasoning_effort: Option<String>,
-    native_session: bool,
-    resume_command: Option<String>,
-    previous_delivery_uncertain: bool,
-    uncertain_delivery_id: Option<String>,
-    status: SeatStatus,
+    pub(super) id: String,
+    pub(super) name: String,
+    pub(super) agent: AgentKind,
+    pub(super) model: Option<String>,
+    pub(super) reasoning_effort: Option<String>,
+    pub(super) native_session: bool,
+    pub(super) resume_command: Option<String>,
+    pub(super) previous_delivery_uncertain: bool,
+    pub(super) uncertain_delivery_id: Option<String>,
+    pub(super) status: SeatStatus,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct RoomView {
-    id: String,
-    name: String,
-    workspace: String,
-    host_agent: Option<String>,
-    seats: Vec<SeatView>,
-    created_at: String,
-    updated_at: String,
+    pub(super) id: String,
+    pub(super) name: String,
+    pub(super) workspace: String,
+    pub(super) host_agent: Option<String>,
+    pub(super) seats: Vec<SeatView>,
+    #[serde(skip_serializing_if = "super::inline::is_zero")]
+    pub(super) omitted_seats: usize,
+    pub(super) created_at: String,
+    pub(super) updated_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -140,6 +153,8 @@ pub(super) struct ListRoomsOutput {
     pub(super) scope: RoomScope,
     pub(super) workspace: Option<String>,
     pub(super) rooms: Vec<RoomView>,
+    #[serde(skip_serializing_if = "super::inline::is_zero")]
+    pub(super) omitted_rooms: usize,
 }
 
 pub(super) type AddSeatOutput = CreateRoomOutput;
@@ -147,11 +162,8 @@ pub(super) type AddSeatOutput = CreateRoomOutput;
 #[derive(Debug, Serialize)]
 pub(super) struct RoomOutput {
     pub(super) room: RoomView,
-}
-
-#[derive(Debug, Serialize)]
-struct ErrorOutput {
-    error: String,
+    #[serde(skip)]
+    pub(super) priority_seat_id: Option<String>,
 }
 
 pub(super) fn room_view(room: &RoomRecord, store: &StateStore) -> RoomView {
@@ -181,6 +193,7 @@ pub(super) fn room_view(room: &RoomRecord, store: &StateStore) -> RoomView {
                 }
             })
             .collect(),
+        omitted_seats: 0,
         created_at: room.created_at.clone(),
         updated_at: room.updated_at.clone(),
     }
@@ -205,19 +218,6 @@ pub(super) fn rooms_for_scope(
 
 pub(super) fn timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
-}
-
-pub(super) fn json_result<T: Serialize>(result: Result<T>) -> CallToolResult {
-    match result {
-        Ok(value) => CallToolResult::structured(to_json(value)),
-        Err(error) => CallToolResult::structured_error(to_json(ErrorOutput {
-            error: format!("{error:#}"),
-        })),
-    }
-}
-
-fn to_json(value: impl Serialize) -> Value {
-    serde_json::to_value(value).unwrap_or(Value::Null)
 }
 
 #[cfg(test)]

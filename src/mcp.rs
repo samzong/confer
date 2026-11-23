@@ -1,6 +1,8 @@
 pub(crate) mod activity;
 mod api;
 mod delivery;
+mod inline;
+mod input;
 mod rooms;
 
 use anyhow::Result;
@@ -12,9 +14,13 @@ use serde::Serialize;
 
 use self::api::{
     AddSeatArgs, CancelDeliveryArgs, ClearUncertainDeliveryArgs, CreateRoomArgs, ListRoomsArgs,
-    RetireSeatArgs, SendMessageArgs, WaitOutputArgs, json_result,
+    RetireSeatArgs, SendMessageArgs, WaitOutputArgs, WaitOutputParams,
 };
 use self::delivery::DeliveryRuntime;
+use self::inline::{
+    render_create_room, render_list_rooms, render_room_output, render_send_message,
+    render_wait_output, structured_err, structured_ok,
+};
 use crate::state::StateStore;
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
@@ -91,7 +97,10 @@ impl ConferMcp {
         &self,
         Parameters(args): Parameters<CreateRoomArgs>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        Ok(json_result(self.create_room_inner(args)))
+        Ok(match self.create_room_inner(args) {
+            Ok(output) => structured_ok(render_create_room(output, None)),
+            Err(error) => structured_err(error),
+        })
     }
 
     #[tool(
@@ -107,7 +116,13 @@ impl ConferMcp {
         &self,
         Parameters(args): Parameters<AddSeatArgs>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        Ok(json_result(self.add_seat_inner(args)))
+        Ok(match self.add_seat_inner(args) {
+            Ok(output) => {
+                let added_id = output.room.seats.last().map(|seat| seat.id.clone());
+                structured_ok(render_create_room(output, added_id.as_deref()))
+            }
+            Err(error) => structured_err(error),
+        })
     }
 
     #[tool(
@@ -123,11 +138,14 @@ impl ConferMcp {
         &self,
         Parameters(args): Parameters<RetireSeatArgs>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        Ok(json_result(self.retire_seat_inner(args).await))
+        Ok(match self.retire_seat_inner(args).await {
+            Ok(output) => structured_ok(render_room_output(output)),
+            Err(error) => structured_err(error),
+        })
     }
 
     #[tool(
-        description = "List Confer rooms. scope defaults to current, which requires workspace as the actual current task's absolute directory. Verify the returned normalized Git worktree root, or canonical directory outside Git, belongs to your task before using that root for followup calls. Never substitute another room's workspace to bypass a mismatch. scope all requires no workspace and lists rooms across every recorded workspace. Returns room and participant metadata only, never messages or agent outputs. previous_delivery_uncertain marks a seat whose last delivery ended unobserved; verify its native work before sending more.",
+        description = "List Confer rooms. scope defaults to current, which requires workspace as the absolute directory of the current task. Make sure that the returned normalized workspace root belongs to your task before you use it for later calls. Never substitute the workspace of another room to bypass a mismatch. scope all requires no workspace and lists rooms across every recorded workspace.\n\nOutput contains room and participant metadata only, never messages or replies. previous_delivery_uncertain marks a seat whose last delivery ended unobserved. Inspect its native work before you send another message. By default, inline JSON output stays within 8,800 UTF-8 bytes and sets omitted_rooms or omitted_seats when items do not fit. Pass full_output set to true to return every matching room and seat.",
         annotations(
             title = "List rooms",
             read_only_hint = true,
@@ -139,7 +157,11 @@ impl ConferMcp {
         &self,
         Parameters(args): Parameters<ListRoomsArgs>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        Ok(json_result(self.list_rooms_inner(args)))
+        let full_output = args.full_output.unwrap_or(false);
+        Ok(match self.list_rooms_inner(args) {
+            Ok(output) => structured_ok(render_list_rooms(output, full_output)),
+            Err(error) => structured_err(error),
+        })
     }
 
     #[tool(
@@ -155,7 +177,10 @@ impl ConferMcp {
         &self,
         Parameters(args): Parameters<SendMessageArgs>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        Ok(json_result(self.send_message_inner(args).await))
+        Ok(match self.send_message_inner(args).await {
+            Ok(output) => structured_ok(render_send_message(output)),
+            Err(error) => structured_err(error),
+        })
     }
 
     #[tool(
@@ -171,11 +196,14 @@ impl ConferMcp {
         &self,
         Parameters(args): Parameters<ClearUncertainDeliveryArgs>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        Ok(json_result(self.clear_uncertain_delivery_inner(args)))
+        Ok(match self.clear_uncertain_delivery_inner(args) {
+            Ok(output) => structured_ok(render_room_output(output)),
+            Err(error) => structured_err(error),
+        })
     }
 
     #[tool(
-        description = "Cancel specific live deliveries in a room. Pass the verified normalized workspace root and a nonempty delivery_ids list. Requested queued deliveries never start. A cancelled result only confirms that the process tree Confer can track stopped. Detached or reparented processes, such as background daemons or development servers, can continue running. The host must inspect these processes separately. A result with previous_delivery_uncertain set to true does not confirm that native work stopped. Cleanup can time out after eight seconds and return timed_out=true, leaving running deliveries marked previous_delivery_uncertain. If cleanup leaves an uncertain marker, queued messages fail before dispatch. Inspect native work, then call clear_uncertain_delivery with the uncertain delivery ID before sending again. Later deliveries resume an observed native session ID. If no ID was observed, cancellation reports that no native session was established. The next delivery can create a new native session. The next send refuses dispatch until uncertainty is cleared. Finished deliveries keep their current status. Partial answers have answer_incomplete set to true. Cancellation does not undo file changes or other side effects. Delivery IDs belong to the current MCP process, as with wait_output.",
+        description = "Cancel specific live deliveries in a room. Pass the normalized workspace root and a nonempty delivery_ids list. Requested queued deliveries never start. A cancelled status means only that the tracked process tree stopped. Detached or reparented processes, such as background daemons or development servers, can continue running. The host must inspect those processes separately.\n\nCleanup can time out after eight seconds and return timed_out set to true. When previous_delivery_uncertain is true, queued messages fail before dispatch and new sends are refused. Inspect native work, then call clear_uncertain_delivery with the uncertain delivery ID before sending again. Later deliveries resume an observed native session ID or start a new session when none exists. Finished deliveries keep their current status, and partial answers set answer_incomplete to true.\n\nCancellation does not undo file changes or other side effects. Delivery IDs belong to the current MCP process. By default, inline JSON output stays within 8,800 UTF-8 bytes, folds long text, and sets output_folded to true. Call wait_output with delivery_ids, timeout_ms set to 0, and full_output set to true to read unfolded text.",
         annotations(
             title = "Cancel delivery",
             read_only_hint = false,
@@ -187,11 +215,14 @@ impl ConferMcp {
         &self,
         Parameters(args): Parameters<CancelDeliveryArgs>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        Ok(json_result(self.cancel_delivery_inner(args).await))
+        Ok(match self.cancel_delivery_inner(args).await {
+            Ok(output) => structured_ok(render_wait_output(output, false)),
+            Err(error) => structured_err(error),
+        })
     }
 
     #[tool(
-        description = "Wait for final answers from live deliveries. Pass the normalized workspace root already verified against your actual current task when creating or recovering the room. A different workspace is rejected; never substitute another room's workspace to bypass a mismatch. Pass delivery IDs to wait for specific sends, or omit them to wait for every delivery from this room still known to the current MCP process. A timeout returns completed answers plus queued and running statuses without cancellation. Cancelled and awaiting_answer deliveries are terminal. A Codex or Cursor question stops the native turn and returns question with awaiting_answer after a clean stop, unless the caller cancelled the delivery. Send the answer to the same seat as a new turn. Failed cleanup keeps the question and error. An answer with answer_incomplete set to true is partial. Thinking, token deltas, and tool events are never returned.",
+        description = "Wait for final answers from live deliveries. Pass the normalized workspace root that matches your current task, because a mismatched workspace fails. Never substitute the workspace of another room to bypass a mismatch. Pass delivery_ids for specific sends, or omit delivery_ids to wait for all room deliveries in this MCP process. A timeout returns completed answers plus queued and running statuses without cancellation.\n\nCancelled and awaiting_answer deliveries are terminal. A Codex or Cursor question stops the native turn and returns question with awaiting_answer unless the caller cancelled. Send the answer to the same seat as a new turn. Failed cleanup keeps the question and error. An answer with answer_incomplete set to true is partial. Thinking, token deltas, and tool events are never returned.\n\nBy default, inline JSON output stays within 8,800 UTF-8 bytes, folds long text, and sets output_folded to true. Pass full_output set to true to return complete raw answers, errors, and questions without folding.",
         annotations(
             title = "Wait for output",
             read_only_hint = true,
@@ -201,9 +232,19 @@ impl ConferMcp {
     )]
     async fn wait_output(
         &self,
-        Parameters(args): Parameters<WaitOutputArgs>,
+        Parameters(args): Parameters<WaitOutputParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        Ok(json_result(self.wait_output_inner(args).await))
+        let full_output = args.full_output.unwrap_or(false);
+        let inner_args = WaitOutputArgs {
+            workspace: args.workspace,
+            room_id: args.room_id,
+            delivery_ids: args.delivery_ids,
+            timeout_ms: args.timeout_ms,
+        };
+        Ok(match self.wait_output_inner(inner_args).await {
+            Ok(output) => structured_ok(render_wait_output(output, full_output)),
+            Err(error) => structured_err(error),
+        })
     }
 }
 
@@ -249,31 +290,4 @@ fn render_capabilities(report: &CapabilitiesReport) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::capabilities;
-
-    #[test]
-    fn capabilities_expose_the_eight_room_tools() {
-        let mut names = capabilities()
-            .unwrap()
-            .tools
-            .into_iter()
-            .map(|tool| tool.name.into_owned())
-            .collect::<Vec<_>>();
-        names.sort();
-
-        assert_eq!(
-            names,
-            [
-                "add_seat",
-                "cancel_delivery",
-                "clear_uncertain_delivery",
-                "create_room",
-                "list_rooms",
-                "retire_seat",
-                "send_message",
-                "wait_output",
-            ]
-        );
-    }
-}
+mod tests;

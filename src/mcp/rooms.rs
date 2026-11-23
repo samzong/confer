@@ -19,7 +19,7 @@ impl ConferMcp {
         }
         let target_size = args.target_size.unwrap_or(0).max(args.seats.len());
         if target_size == 0 {
-            bail!("provide target_size or at least one seat");
+            bail!("{}", super::input::empty_create_room_error());
         }
         let readiness = adapters::readiness();
         let host_agent = detect_host_agent(args.host_agent.as_deref());
@@ -137,6 +137,7 @@ impl ConferMcp {
         }
         Ok(RoomOutput {
             room: room_view(&room, &self.store),
+            priority_seat_id: Some(seat_id),
         })
     }
 
@@ -164,6 +165,7 @@ impl ConferMcp {
             scope,
             workspace,
             rooms,
+            omitted_rooms: 0,
         })
     }
 }

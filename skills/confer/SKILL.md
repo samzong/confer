@@ -75,6 +75,29 @@ If `wait_output` returns `awaiting_answer`, read `question` and obtain the answe
 
 After upgrading Confer, refresh the MCP connection and tool schemas. target_size now counts execution seats only; update older calls that included the host. Creation requires a positive target_size or at least one seat, and create_room and add_seat no longer return replacements. Calls that omit the required workspace are rejected; do not infer a fallback from the server's working directory or silently relocate an older room.
 
+### Tool Signatures and Lazy MCP Calls
+
+When the host exposes Confer lazily, such as through `call_mcp_tool` with `ServerName` set to `"confer"`, use the inline signatures below. Do not read external schema files before your first tool call. If a call returns a parameter error, read the schema file for that tool.
+
+```text
+SeatSpec = { agent?: string, model?: string, reasoning_effort?: string, name?: string, instructions?: string }
+
+create_room({ workspace: string, name?: string, target_size?: integer >= 1, host_agent?: string, seats?: SeatSpec[] })
+add_seat({ workspace: string, room_id: string, seat: SeatSpec })
+retire_seat({ workspace: string, room_id: string, seat: string })
+list_rooms({ workspace?: string, scope?: "current" | "all", full_output?: boolean })
+send_message({ workspace: string, room_id: string, recipients: string[], message: string })
+wait_output({ workspace: string, room_id: string, delivery_ids?: string[], timeout_ms?: 0..600000, full_output?: boolean })
+cancel_delivery({ workspace: string, room_id: string, delivery_ids: string[] })
+clear_uncertain_delivery({ workspace: string, room_id: string, seat: string, delivery_id: string })
+```
+
+`create_room` requires a positive `target_size`, at least one entry in `seats`, or both. `list_rooms` defaults `scope` to `"current"` and requires `workspace` when `scope` is `"current"`. `send_message` requires a nonempty `message` and nonempty `recipients`, or `["*"]` alone for broadcast. `wait_output` defaults `timeout_ms` to `120000`, accepts `0` for a snapshot, and caps at `600000`. `cancel_delivery` requires at least one delivery ID in `delivery_ids`.
+
+Some untyped MCP callers corrupt nested arrays or objects such as `seats`, `seat`, `recipients`, or `delivery_ids` into booleans, `null`, or empty arrays. If a tool error reports corrupted nested parameters, do not retry the same payload unchanged. For `create_room`, pass `target_size` set to `1` or one seat, then add remaining seats one by one with `add_seat`. For `send_message`, `wait_output`, `cancel_delivery`, or `add_seat`, call one target at a time or pass the nested field as a JSON string.
+
+By default, Confer keeps inline JSON output within 8,800 UTF-8 bytes so hosts do not spill tool output to files. `wait_output` and `cancel_delivery` strip terminal escape sequences, fold long text from head and tail, and set `output_folded` to `true`. If your task needs the full text of a folded delivery, call `wait_output` with `delivery_ids`, `timeout_ms: 0`, and `full_output: true`. If `list_rooms` reports `omitted_rooms` or `omitted_seats` and you need every entry, call `list_rooms` with `full_output: true`.
+
 ## Report the Result
 
 Return a single conclusion, not a transcript dump. Preserve important disagreements and identify which evidence resolves them.
