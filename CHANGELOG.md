@@ -1,6 +1,32 @@
 # Changelog
 
 
+## [0.3.0](https://github.com/samzong/confer/compare/v0.2.4...v0.3.0) (2026-11-25)
+
+
+### Features
+
+* **install:** add paired MCP and Skill host support ([#33](https://github.com/samzong/confer/issues/33))
+* **codex:** archive retired seat threads and unarchive on resume ([#40](https://github.com/samzong/confer/issues/40))
+* **adapters:** add Rx ACP backend ([#44](https://github.com/samzong/confer/issues/44))
+* **mcp:** bound inline JSON output and harden nested tool inputs ([#46](https://github.com/samzong/confer/issues/46))
+
+
+### Fixes
+
+* **deps:** resolve cargo audit advisories ([#38](https://github.com/samzong/confer/issues/38))
+* **delivery:** preserve native sessions and delivery state ([#39](https://github.com/samzong/confer/issues/39))
+* **deps:** update url to 2.5.9 ([#45](https://github.com/samzong/confer/issues/45))
+
+
+### Documentation
+
+* **duo:** add unattended progress, Build Standard ownership, and Fast evidence rules ([#30](https://github.com/samzong/confer/issues/30))
+* **duo:** sync host coordination and cancellation rules ([#41](https://github.com/samzong/confer/issues/41))
+* **duo:** state that uncancelled queued deliveries run next ([#42](https://github.com/samzong/confer/issues/42))
+* **duo:** rename design adviser to architect ([#43](https://github.com/samzong/confer/issues/43))
+
+
 ## [0.2.4](https://github.com/samzong/confer/compare/v0.2.3...v0.2.4) (2026-10-19)
 
 
