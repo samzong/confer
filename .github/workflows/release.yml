@@ -11,8 +11,55 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
+      make_latest: ${{ steps.meta.outputs.make_latest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Verify SemVer tag and Cargo manifest
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF:-}" != refs/tags/* ]]; then
+            echo "::error::Release workflow must run from a tag ref, got: ${GITHUB_REF:-missing}"
+            exit 1
+          fi
+          tag="${GITHUB_REF_NAME:-}"
+          regex='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((alpha|beta|rc)\.[1-9][0-9]*))?$'
+          if [[ ! "$tag" =~ $regex ]]; then
+            echo "::error::Invalid SemVer release tag: $tag"
+            exit 1
+          fi
+          version="${tag#v}"
+          manifest_version="$(python3 -c 'import tomllib
+          with open("Cargo.toml", "rb") as f:
+              data = tomllib.load(f)
+          pkg = data.get("package", {})
+          ver = pkg.get("version")
+          if not isinstance(ver, str):
+              ver = data.get("workspace", {}).get("package", {}).get("version", "")
+          print(ver if isinstance(ver, str) else "")')"
+          if [[ -z "$manifest_version" || "$manifest_version" != "$version" ]]; then
+            echo "::error::Tag version $version does not match Cargo.toml version ${manifest_version:-missing}"
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse "refs/tags/$tag^{commit}")" ]]; then
+            echo "::error::Checked out commit does not match tag $tag"
+            exit 1
+          fi
+          is_prerelease="false"
+          make_latest="true"
+          if [[ "$tag" =~ -(alpha|beta|rc)\.[1-9][0-9]*$ ]]; then
+            is_prerelease="true"
+            make_latest="false"
+          fi
+          {
+            echo "version=$version"
+            echo "is_prerelease=$is_prerelease"
+            echo "make_latest=$make_latest"
+          } >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           components: clippy,rustfmt
@@ -21,6 +68,7 @@ jobs:
       - run: make check
 
   build:
+    needs: check
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -70,3 +118,5 @@ jobs:
         with:
           body_path: release-notes.md
           files: confer-*.tar.gz
+          prerelease: ${{ needs.check.outputs.is_prerelease }}
+          make_latest: ${{ needs.check.outputs.make_latest }}
